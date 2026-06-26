@@ -13,7 +13,9 @@ import json
 import logging
 import os
 import re
-import sqlite3
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+import models
 import subprocess
 import sys
 import time
@@ -747,10 +749,17 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
 
     # db is only given as an argument in tests (normally)
     if db is None:
-        # Delete existing database unless --update/-u is given
-        if not (args.update or args.history_resume or args.history_resume_or_start) and os.path.exists(args.db):
+        # Delete existing database file unless --update/-u is given
+        if args.db and not (args.update or args.history_resume or args.history_resume_or_start) and os.path.exists(args.db):
             os.unlink(args.db)
-        db = sqlite3.connect(args.db)
+        # Create SQLAlchemy engine
+        if args.db:
+            engine = create_engine(f'sqlite:///{args.db}')
+        else:
+            engine = create_engine('sqlite:///:memory:')
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        db = (engine, session)
 
     # If --history-days, get just this many days history
     if (args.history is not None
@@ -758,7 +767,8 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
         or args.history_resume_or_start is not None
         or args.history_days is not None
         or args.history_start is not None):
-        errors = get_history(db, sacct_filter=sacct_filter,
+        engine, session = db
+        errors = get_history(db, session, sacct_filter=sacct_filter,
                             history=args.history,
                             history_resume=args.history_resume,
                             history_resume_or_start=args.history_resume_or_start,
@@ -771,16 +781,17 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
                             # (below is just for running tests)
                             csv_input=csv_input)
 
-        create_indexes(db)
+        create_indexes(engine)
     # Normal operation
     else:
-        errors = slurm2sql(db, sacct_filter=sacct_filter,
+        engine, session = db
+        errors = slurm2sql(engine, session, sacct_filter=sacct_filter,
                            update=args.update,
                            jobs_only=args.jobs_only,
                            raw_sacct=raw_sacct,
                            verbose=args.verbose,
                            csv_input=args.csv_input or csv_input)
-        create_indexes(db)
+        create_indexes(engine)
 
     if errors:
         LOG.warning("Completed with %s errors", errors)
@@ -788,7 +799,7 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
     return(0)
 
 
-def get_history(db, sacct_filter=['-a'],
+def get_history(engine, session, sacct_filter=['-a'],
                 history=None, history_resume=None, history_days=None,
                 history_resume_or_start=None,
                 history_start=None, history_end=None,
@@ -806,13 +817,13 @@ def get_history(db, sacct_filter=['-a'],
 
     if history_resume_or_start:
         try:
-            start = get_last_timestamp(db)
+            start = get_last_timestamp(session)
             start = datetime.datetime.fromtimestamp(start - 5)
-        except sqlite3.OperationalError:
+        except: # We catch any exception.
             start = now - datetime.timedelta(seconds=slurmtime(history_resume_or_start))
     elif history_resume:
         try:
-            start = get_last_timestamp(db)
+            start = get_last_timestamp(session)
         except:
             import traceback
             traceback.print_exc()
@@ -842,10 +853,10 @@ def get_history(db, sacct_filter=['-a'],
             ]
         LOG.debug(new_filter)
         LOG.info("%s %s", days_ago, start.date() if history_days is not None else start)
-        errors += slurm2sql(db, sacct_filter=new_filter, update=True, jobs_only=jobs_only,
+        errors += slurm2sql(engine, session, sacct_filter=new_filter, update=True, jobs_only=jobs_only,
                             raw_sacct=raw_sacct, csv_input=csv_input)
-        db.commit()
-        update_last_timestamp(db, update_time=end_actual)
+        session.commit()
+        update_last_timestamp(session, update_time=end_actual)
         start = end
         days_ago -= day_interval
     return errors
@@ -864,14 +875,14 @@ def sacct(slurm_cols, sacct_filter):
     return p.stdout
 
 
-def create_indexes(db):
-    db.execute('CREATE INDEX IF NOT EXISTS idx_slurm_jobidnostep ON slurm (JobIDnostep)')
-    db.execute('CREATE INDEX IF NOT EXISTS idx_slurm_start ON slurm (Start)')
-    db.execute('CREATE INDEX IF NOT EXISTS idx_slurm_user_start ON slurm (User, Start)')
-    db.execute('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm (Time)')
-    db.execute('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm (User, Time)')
-    db.execute('ANALYZE;')
-    db.commit()
+def create_indexes(engine):
+    with engine.connect() as conn:
+        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidnostep ON slurm (JobIDnostep)'))
+        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_start ON slurm (Start)'))
+        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_start ON slurm (User, Start)'))
+        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm (Time)'))
+        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm (User, Time)'))
+        conn.execute(text('ANALYZE'))
 
 
 def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
@@ -914,7 +925,7 @@ def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
         yield line
 
 
-def slurm2sql(db, sacct_filter=['-a'], update=False, jobs_only=False,
+def slurm2sql(engine, session, sacct_filter=['-a'], update=False, jobs_only=False,
               raw_sacct=None, verbose=False,
               csv_input=None):
     """Import one call of sacct to a sqlite database.
@@ -940,54 +951,52 @@ def slurm2sql(db, sacct_filter=['-a'], update=False, jobs_only=False,
         if hasattr(cd, 'type'): return cd.type
         elif cd == str: return 'text'
         return ''
-    create_columns = ', '.join('"%s" %s'%(c.strip('_'), infer_type(cd))
-                               for c, cd in columns.items())
-    create_columns = create_columns.replace('JobID" text', 'JobID" text UNIQUE')
-    db.execute('CREATE TABLE IF NOT EXISTS slurm (%s)'%create_columns)
-    db.execute('CREATE TABLE IF NOT EXISTS meta_slurm_lastupdate (id INTEGER PRIMARY KEY, update_time REAL)')
-    db.execute('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null;')
-    db.execute('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null;')
-    db.execute('CREATE VIEW IF NOT EXISTS eff AS select '
-               'JobIDnostep AS JobID, '
-               'max(User) AS User, '
-               'max(Partition) AS Partition, '
-               '(SELECT s2.JobName FROM slurm AS s2 WHERE s2.JobIDnostep = slurm1.JobIDnostep AND s2.JobStep IS null LIMIT 1) AS JobName,'
-               'group_concat(SubmitLine, \'\n\') AS SubmitLines, '
-               'Account, '
-               '(SELECT State FROM allocations AS allocations2 WHERE allocations2.jobid=slurm1.JobIDnostep) AS State, '
-               #'State AS State, '
-               'NodeList, '
-               'Time, '
-               'max(TimeLimit) AS TimeLimit, '
-               'min(Start) AS Start, '
-               'max(End) AS End, '
-               'max(NNodes) AS NNodes, '
-               'ReqTRES, '
-               'max(Elapsed) AS Elapsed, '
-               'max(NCPUS) AS NCPUS, '
-               'sum(totalcpu)/max(cputime) AS CPUeff, '
-               'max(cputime) AS cpu_s_reserved, '
-               'sum(totalcpu) AS cpu_s_used, '
-               'max(ReqMemNode) AS MemReq, '
-               'max(AllocMem) AS AllocMem, '
-               'max(TotalMem) AS TotalMem, '
-               'max(MaxRSS) AS MaxRSS, '
-               'max(MemEff) AS MemEff, '
-               'max(AllocMem*Elapsed) AS mem_s_reserved, ' # highest of any job
-               'max(NGpus) AS NGpus, '
-               'max(GPUType) AS GPUType, '
-               'max(NGpus)*max(Elapsed) AS gpu_s_reserved, '
-               'max(NGpus)*max(Elapsed)*max(GpuUtil) AS gpu_s_used, '
-               'sum(GpuUtil*Elapsed)/max(Ngpus*Elapsed) AS GpuEff, '
-               'max(GpuMem) AS GpuMem, '
-               'MaxDiskRead, '
-               'MaxDiskWrite, '
-               'sum(TotDiskRead) as TotDiskRead, '
-               'sum(TotDiskWrite) as TotDiskWrite '
-               'FROM slurm AS slurm1 GROUP BY JobIDnostep')
-    #db.execute('PRAGMA journal_mode = WAL;')
-    db.commit()
-    c = db.cursor()
+    # Ensure tables exist via models
+    models.Base.metadata.create_all(bind=engine)
+    # Create views using raw SQL where supported
+    with engine.connect() as conn:
+        conn.execute(text('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null'))
+        conn.execute(text('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null'))
+        conn.execute(text(
+            'CREATE VIEW IF NOT EXISTS eff AS select '
+            'JobIDnostep AS JobID, '
+            'max(User) AS User, '
+            'max(Partition) AS Partition, '
+            '(SELECT s2.JobName FROM slurm AS s2 WHERE s2.JobIDnostep = slurm1.JobIDnostep AND s2.JobStep IS null LIMIT 1) AS JobName,'
+            'group_concat(SubmitLine, \'\n\') AS SubmitLines, '
+            'Account, '
+            '(SELECT State FROM allocations AS allocations2 WHERE allocations2.jobid=slurm1.JobIDnostep) AS State, '
+            'NodeList, '
+            'Time, '
+            'max(TimeLimit) AS TimeLimit, '
+            'min(Start) AS Start, '
+            'max(End) AS End, '
+            'max(NNodes) AS NNodes, '
+            'ReqTRES, '
+            'max(Elapsed) AS Elapsed, '
+            'max(NCPUS) AS NCPUS, '
+            'sum(totalcpu)/max(cputime) AS CPUeff, '
+            'max(cputime) AS cpu_s_reserved, '
+            'sum(totalcpu) AS cpu_s_used, '
+            'max(ReqMemNode) AS MemReq, '
+            'max(AllocMem) AS AllocMem, '
+            'max(TotalMem) AS TotalMem, '
+            'max(MaxRSS) AS MaxRSS, '
+            'max(MemEff) AS MemEff, '
+            'max(AllocMem*Elapsed) AS mem_s_reserved, '
+            'max(NGpus) AS NGpus, '
+            'max(GPUType) AS GPUType, '
+            'max(NGpus)*max(Elapsed) AS gpu_s_reserved, '
+            'max(NGpus)*max(Elapsed)*max(GpuUtil) AS gpu_s_used, '
+            'sum(GpuUtil*Elapsed)/max(Ngpus*Elapsed) AS GpuEff, '
+            'max(GpuMem) AS GpuMem, '
+            'MaxDiskRead, '
+            'MaxDiskWrite, '
+            'sum(TotDiskRead) as TotDiskRead, '
+            'sum(TotDiskWrite) as TotDiskWrite '
+            'FROM slurm AS slurm1 GROUP BY JobIDnostep'
+        ))
+    c = None
 
     slurm_cols = tuple(c for c in list(columns.keys()) + COLUMNS_EXTRA if not c.startswith('_'))
 
@@ -1015,24 +1024,28 @@ def slurm2sql(db, sacct_filter=['-a'], update=False, jobs_only=False,
 
         #LOG.debug(row)
         processed_row = {k.strip('_'): (columns[k](row[k])
-                                        #if not isinstance(columns[k], type) or not issubclass(columns[k], linefunc)
                                         if not hasattr(columns[k], 'linefunc')
                                         else columns[k].calc(row))
                          for k in columns.keys()}
 
-        c.execute('INSERT %s INTO slurm (%s) VALUES (%s)'%(
-                  'OR REPLACE' if update else '',
-                  ','.join('"'+x+'"' for x in processed_row.keys()),
-                  ','.join(['?']*len(processed_row))),
-            tuple(processed_row.values()))
+        # Upsert by JobID if update requested, else insert
+        JobID = processed_row.get('JobID')
+        if update and JobID:
+            existing = session.query(models.Slurm).filter_by(JobID=JobID).first()
+            if existing:
+                for kk, vv in processed_row.items():
+                    setattr(existing, kk, vv)
+            else:
+                session.add(models.Slurm(**processed_row))
+        else:
+            session.add(models.Slurm(**processed_row))
 
         # Committing every so often allows other queries to succeed
         if i%10000 == 0:
-            #print('committing')
-            db.commit()
+            session.commit()
             if verbose:
                 print('... processing row %d'%i)
-    db.commit()
+    session.commit()
     return errors[0]
 
 
@@ -1088,20 +1101,25 @@ def import_or_open_db(args, sacct_filter, csv_input=None):
 
     """
     if args.db:
-        db = sqlite3.connect(args.db)
+        engine = create_engine(f'sqlite:///{args.db}')
+        Session = sessionmaker(bind=engine)
+        session = Session()
         if sacct_filter:
             LOG.warn("Warning: reading from database.  Any sacct filters are ignored.")
+        return engine, session
     else:
-        # Import fresh
+        # Import fresh into in-memory engine
         sacct_filter = args_to_sacct_filter(args, sacct_filter)
         LOG.debug(f'sacct args: {sacct_filter}')
-        db = sqlite3.connect(':memory:')
-        errors = slurm2sql(db, sacct_filter=sacct_filter,
-                           csv_input=getattr(args, 'csv_input', False) or csv_input)
-    return db
+        engine = create_engine('sqlite:///:memory:')
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        slurm2sql(engine, session, sacct_filter=sacct_filter,
+                 csv_input=getattr(args, 'csv_input', False) or csv_input)
+        return engine, session
 
 
-def update_last_timestamp(db, update_time=None):
+def update_last_timestamp(session, update_time=None):
     """Update the last update time in the database, for resuming.
 
     Updates the one row of the meta_slurm_lastupdate with the latest
@@ -1112,12 +1130,19 @@ def update_last_timestamp(db, update_time=None):
     if isinstance(update_time, datetime.datetime):
         update_time = datetime_timestamp(update_time)
     #update_time = min(update_time, time.time())
-    db.execute("INSERT OR REPLACE INTO meta_slurm_lastupdate (id, update_time) VALUES (0, ?)", (update_time, ))
-    db.commit()
+    # using ORM
+    obj = session.query(models.MetaSlurmLastUpdate).get(0)
+    if obj:
+        obj.update_time = update_time
+    else:
+        obj = models.MetaSlurmLastUpdate(id=0, update_time=update_time)
+        session.add(obj)
+    session.commit()
 
-def get_last_timestamp(db):
+def get_last_timestamp(session):
     """Return the last update timestamp from the database"""
-    return db.execute('SELECT update_time FROM meta_slurm_lastupdate').fetchone()[0]
+    obj = session.query(models.MetaSlurmLastUpdate).get(0)
+    return obj.update_time
 
 
 def slurm_version(cmd=['sacct', '--version']):
@@ -1207,16 +1232,18 @@ def sacct_cli(argv=sys.argv[1:], csv_input=None):
     if args.output == 'long':
         args.output = SACCT_DEFAULT_FIELDS_LONG
 
-    db = import_or_open_db(args, sacct_filter, csv_input=csv_input)
+    engine, _ = import_or_open_db(args, sacct_filter, csv_input=csv_input)
 
     # If we run sacct, then args.user is set to None so we don't do double filtering here
     where = args_to_sql_where(args)
 
     from tabulate import tabulate
-    cur = db.execute(f'select {args.output} from slurm WHERE true {where}',
-                     {'user':args.user, 'partition': args.partition})
-    headers = [ x[0] for x in cur.description ]
-    print(tabulate(cur, headers=headers, tablefmt=args.format))
+    sql = f'select {args.output} from slurm WHERE true {where}'
+    with engine.connect() as conn:
+        res = conn.execute(text(sql), {'user': args.user, 'partition': args.partition})
+        headers = res.keys()
+        data = res.fetchall()
+    print(tabulate(data, headers=headers, tablefmt=args.format))
 
 
 def seff_cli(argv=sys.argv[1:], csv_input=None):
@@ -1289,7 +1316,7 @@ def seff_cli(argv=sys.argv[1:], csv_input=None):
     if args.long:
         long_output = "strftime('%m-%d_%H:%M', Start, 'unixepoch') AS Start, strftime('%m-%d_%H:%M', End, 'unixepoch') AS End,"
 
-    db = import_or_open_db(args, sacct_filter, csv_input=csv_input)
+    engine, _ = import_or_open_db(args, sacct_filter, csv_input=csv_input)
 
     # If we run sacct, then args.user is set to None so we don't do double filtering here
     where = args_to_sql_where(args)
@@ -1297,7 +1324,7 @@ def seff_cli(argv=sys.argv[1:], csv_input=None):
     from tabulate import tabulate
 
     if args.aggregate_user:
-        cur = db.execute(f"""select * from ( select
+        sql = f"""select * from ( select
                                 User,
                                 round(sum(Elapsed)/86400,1) AS days,
 
@@ -1311,7 +1338,7 @@ def seff_cli(argv=sys.argv[1:], csv_input=None):
 
                                "┃" AS "g",
                                 round(sum(Elapsed*NGPUs)/86400,1) AS gpu_day,
-                                iif(sum(NGpus), printf("%2.0f%%", 100*sum(Elapsed*NGPUs*GPUeff)/sum(Elapsed*NGPUs)), NULL) AS GPUEff,
+                                iif(sum(NGpus), printf("%2.0f%%", 100*sum(Elapsed*NGpus*GPUeff)/sum(Elapsed*NGpus)), NULL) AS GPUEff,
 
                                "┃" AS "d",
                                 round(sum(TotDiskRead/1048576)/sum(Elapsed),2) AS read_MiBps,
@@ -1320,16 +1347,18 @@ def seff_cli(argv=sys.argv[1:], csv_input=None):
                                 FROM eff
                                 WHERE End IS NOT NULL {where}
                             GROUP BY user ) {order_by}
-                            """, {'user': args.user, 'partition': args.partition})
-        headers = [ x[0] for x in cur.description ]
-        data = cur.fetchall()
+                            """
+        with engine.connect() as conn:
+            cur = conn.execute(text(sql), {'user': args.user, 'partition': args.partition})
+            headers = cur.keys()
+            data = cur.fetchall()
         if len(data) == 0:
             print("No data fetched with these sacct options.")
             exit(2)
         print(tabulate(data, headers=headers, tablefmt=args.format, colalign=('left', 'decimal',)+('decimal', 'right')*3))
         sys.exit()
 
-    cur = db.execute(f"""select * from ( select
+    sql = f"""select * from ( select
                          JobID,
                          User,
                          round(Elapsed/3600,2) AS hours,
@@ -1355,9 +1384,11 @@ def seff_cli(argv=sys.argv[1:], csv_input=None):
                          round(TotDiskWrite/Elapsed/1048576,2) AS write_MiBps
 
                          FROM eff
-                         WHERE Start IS NOT NULL and End IS NOT NULL {where} ) {order_by}""", {'user': args.user, 'partition': args.partition})
-    headers = [ x[0] for x in cur.description ]
-    data = cur.fetchall()
+                         WHERE Start IS NOT NULL and End IS NOT NULL {where} ) {order_by}"""
+    with engine.connect() as conn:
+        cur = conn.execute(text(sql), {'user': args.user, 'partition': args.partition})
+        headers = cur.keys()
+        data = cur.fetchall()
     if len(data) == 0:
         print("No data fetched with these sacct options.")
         exit(2)
