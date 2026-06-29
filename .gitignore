@@ -6,3 +6,5 @@
 /dist
 slurm2sql.egg-info/
 .vscode
+__pycache__/**/*
+**/__pycache__/**/*
