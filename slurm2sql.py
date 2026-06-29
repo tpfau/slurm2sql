@@ -753,10 +753,16 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
         if args.db and not (args.update or args.history_resume or args.history_resume_or_start) and os.path.exists(args.db):
             os.unlink(args.db)
         # Create SQLAlchemy engine
-        if args.db:
-            engine = create_engine(f'sqlite:///{args.db}')
+        print(f"using database: {args.db}")
+        connection_string = args.db
+        if connection_string:
+            if not "://" in connection_string:
+                # If no scheme, assume sqlite
+                connection_string = f'sqlite:///{connection_string}'            
         else:
-            engine = create_engine('sqlite:///:memory:')
+            connection_string = 'sqlite:///:memory:'
+        engine = create_engine(connection_string)
+            
         Session = sessionmaker(bind=engine)
         session = Session()
         db = (engine, session)

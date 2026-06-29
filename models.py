@@ -87,7 +87,7 @@ class Slurm(Base):
     TotDiskWrite = Column(Float)
 
     # GPU
-    ReqGpus = Column(Float)
+    ReqGPUS = Column(Float)
     Comment = Column(Text)
     GpuEff = Column(Float)
     NGpus = Column(Float)
