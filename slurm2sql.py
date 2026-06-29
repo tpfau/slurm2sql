@@ -14,7 +14,7 @@ import logging
 import os
 import re
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 import models
 import subprocess
 import sys
@@ -696,7 +696,20 @@ COLUMNS_EXTRA = ['JobID',
                  'TRESUsageOutTot',
                 ]
 
-
+def get_db_from_args(args):
+    """Get a database engine and session from the command line arguments"""
+    connection_string = args.db
+    if connection_string:
+        if not "://" in connection_string:
+            # If no scheme, assume sqlite
+            connection_string = f'sqlite:///{connection_string}'                        
+    else:
+        connection_string = 'sqlite:///:memory:'
+    engine = create_engine(connection_string)
+        
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    return (engine, session)
 
 def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
     """Parse arguments and use the other API"""
@@ -750,21 +763,12 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
     # db is only given as an argument in tests (normally)
     if db is None:
         # Delete existing database file unless --update/-u is given
-        if args.db and not (args.update or args.history_resume or args.history_resume_or_start) and os.path.exists(args.db):
+        if args.db and not (args.update or args.history_resume or args.history_resume_or_start or ("://" in args.db)) and os.path.exists(args.db):
             os.unlink(args.db)
-        # Create SQLAlchemy engine
-        print(f"using database: {args.db}")
-        connection_string = args.db
-        if connection_string:
-            if not "://" in connection_string:
-                # If no scheme, assume sqlite
-                connection_string = f'sqlite:///{connection_string}'            
-        else:
-            connection_string = 'sqlite:///:memory:'
-        engine = create_engine(connection_string)
             
-        Session = sessionmaker(bind=engine)
-        session = Session()
+        # Create SQLAlchemy engine                
+        engine, session = get_db_from_args(args)        
+        set_up_db(engine, session)        
         db = (engine, session)
 
     # If --history-days, get just this many days history
@@ -774,7 +778,7 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
         or args.history_days is not None
         or args.history_start is not None):
         engine, session = db
-        errors = get_history(db, session, sacct_filter=sacct_filter,
+        errors = get_history(session, sacct_filter=sacct_filter,
                             history=args.history,
                             history_resume=args.history_resume,
                             history_resume_or_start=args.history_resume_or_start,
@@ -787,17 +791,17 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
                             # (below is just for running tests)
                             csv_input=csv_input)
 
-        create_indexes(engine)
+        create_indexes(session)
     # Normal operation
     else:
         engine, session = db
-        errors = slurm2sql(engine, session, sacct_filter=sacct_filter,
+        errors = slurm2sql(session, sacct_filter=sacct_filter,
                            update=args.update,
                            jobs_only=args.jobs_only,
                            raw_sacct=raw_sacct,
                            verbose=args.verbose,
                            csv_input=args.csv_input or csv_input)
-        create_indexes(engine)
+        create_indexes(session)
 
     if errors:
         LOG.warning("Completed with %s errors", errors)
@@ -805,7 +809,7 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
     return(0)
 
 
-def get_history(engine, session, sacct_filter=['-a'],
+def get_history(session, sacct_filter=['-a'],
                 history=None, history_resume=None, history_days=None,
                 history_resume_or_start=None,
                 history_start=None, history_end=None,
@@ -859,7 +863,7 @@ def get_history(engine, session, sacct_filter=['-a'],
             ]
         LOG.debug(new_filter)
         LOG.info("%s %s", days_ago, start.date() if history_days is not None else start)
-        errors += slurm2sql(engine, session, sacct_filter=new_filter, update=True, jobs_only=jobs_only,
+        errors += slurm2sql(session, sacct_filter=new_filter, update=True, jobs_only=jobs_only,
                             raw_sacct=raw_sacct, csv_input=csv_input)
         session.commit()
         update_last_timestamp(session, update_time=end_actual)
@@ -881,14 +885,13 @@ def sacct(slurm_cols, sacct_filter):
     return p.stdout
 
 
-def create_indexes(engine):
-    with engine.connect() as conn:
-        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidnostep ON slurm (JobIDnostep)'))
-        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_start ON slurm (Start)'))
-        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_start ON slurm (User, Start)'))
-        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm (Time)'))
-        conn.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm (User, Time)'))
-        conn.execute(text('ANALYZE'))
+def create_indexes(session):    
+    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidnostep ON slurm (JobIDnostep)'))
+    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_start ON slurm (Start)'))
+    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_start ON slurm (User, Start)'))
+    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm (Time)'))
+    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm (User, Time)'))
+    session.connection().execute(text('ANALYZE'))
 
 
 def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
@@ -931,7 +934,13 @@ def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
         yield line
 
 
-def slurm2sql(engine, session, sacct_filter=['-a'], update=False, jobs_only=False,
+def set_up_db(engine, session : Session):
+    """Create the database tables if they don't exist"""
+    models.Base.metadata.create_all(engine)
+    create_indexes(session)
+    
+
+def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=False,
               raw_sacct=None, verbose=False,
               csv_input=None):
     """Import one call of sacct to a sqlite database.
@@ -956,17 +965,14 @@ def slurm2sql(engine, session, sacct_filter=['-a'], update=False, jobs_only=Fals
     def infer_type(cd):
         if hasattr(cd, 'type'): return cd.type
         elif cd == str: return 'text'
-        return ''
-    # Ensure tables exist via models
-    models.Base.metadata.create_all(bind=engine)
+        return ''    
     # Create views using raw SQL where supported
-    with engine.connect() as conn:
-        conn.execute(text('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null'))
-        conn.execute(text('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null'))
-        conn.execute(text(
-            'CREATE VIEW IF NOT EXISTS eff AS select '
-            'JobIDnostep AS JobID, '
-            'max(User) AS User, '
+    session.connection().execute(text('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null'))
+    session.connection().execute(text('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null'))
+    session.connection().execute(text(
+        'CREATE VIEW IF NOT EXISTS eff AS select '
+        'JobIDnostep AS JobID, '
+        'max(User) AS User, '
             'max(Partition) AS Partition, '
             '(SELECT s2.JobName FROM slurm AS s2 WHERE s2.JobIDnostep = slurm1.JobIDnostep AND s2.JobStep IS null LIMIT 1) AS JobName,'
             'group_concat(SubmitLine, \'\n\') AS SubmitLines, '
@@ -1107,9 +1113,7 @@ def import_or_open_db(args, sacct_filter, csv_input=None):
 
     """
     if args.db:
-        engine = create_engine(f'sqlite:///{args.db}')
-        Session = sessionmaker(bind=engine)
-        session = Session()
+        engine, session = get_db_from_args(args)        
         if sacct_filter:
             LOG.warn("Warning: reading from database.  Any sacct filters are ignored.")
         return engine, session
@@ -1120,7 +1124,8 @@ def import_or_open_db(args, sacct_filter, csv_input=None):
         engine = create_engine('sqlite:///:memory:')
         Session = sessionmaker(bind=engine)
         session = Session()
-        slurm2sql(engine, session, sacct_filter=sacct_filter,
+        set_up_db(engine, session)
+        slurm2sql(session, sacct_filter=sacct_filter,
                  csv_input=getattr(args, 'csv_input', False) or csv_input)
         return engine, session
 
