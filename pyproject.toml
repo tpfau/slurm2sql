@@ -26,8 +26,7 @@ classifiers = [
 keywords = ["slurm", "sqlite3"]
 requires-python = ">=3.6"
 dynamic = ["version", "description"]
-dependencies = [
-    "pandas>=0.25.3",
+dependencies = [    
     "sqlalchemy>=1.4.54",
     "tabulate",
 ]
