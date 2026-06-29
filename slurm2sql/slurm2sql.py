@@ -15,7 +15,7 @@ import os
 import re
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
-from slurm2sql.models import models
+from slurm2sql.models import tables
 import subprocess
 import sys
 import time
@@ -772,7 +772,6 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
         db = (engine, session)
     engine, session = db
     # Ensure that everything exists in main
-    print("setting up db")
     set_up_db(engine)        
     # If --history-days, get just this many days history
     if (args.history is not None
@@ -896,7 +895,6 @@ def create_indexes(connection: Session):
 
 
 def create_views(connection):
-    print("Setting up views")
     connection.execute(text('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null'))
     connection.execute(text('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null'))
     connection.execute(text(
@@ -980,7 +978,8 @@ def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
 
 def set_up_db(engine):
     """Create the database tables if they don't exist"""
-    models.Base.metadata.create_all(engine)
+    # Remove views from metadata for creation    
+    tables.Base.metadata.create_all(engine)
     with engine.begin() as conn:
         create_views(conn)        
         create_indexes(conn)
@@ -1013,7 +1012,6 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
         elif cd == str: return 'text'
         return ''    
     # Create views using raw SQL where supported
-    print("creating views")   
     c = None
     slurm_cols = tuple(c for c in list(columns.keys()) + COLUMNS_EXTRA if not c.startswith('_'))
 
@@ -1048,14 +1046,14 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
         # Upsert by JobID if update requested, else insert
         JobID = processed_row.get('JobID')
         if update and JobID:
-            existing = session.query(models.Slurm).filter_by(JobID=JobID).first()
+            existing = session.query(tables.Slurm).filter_by(JobID=JobID).first()
             if existing:
                 for kk, vv in processed_row.items():
                     setattr(existing, kk, vv)
             else:                
-                session.add(models.Slurm(**processed_row))
+                session.add(tables.Slurm(**processed_row))
         else:
-            session.add(models.Slurm(**processed_row))
+            session.add(tables.Slurm(**processed_row))
 
         # Committing every so often allows other queries to succeed
         if i%10000 == 0:            
@@ -1147,17 +1145,17 @@ def update_last_timestamp(session, update_time=None):
         update_time = datetime_timestamp(update_time)
     #update_time = min(update_time, time.time())
     # using ORM
-    obj = session.query(models.MetaSlurmLastUpdate).get(0)
+    obj = session.query(tables.MetaSlurmLastUpdate).get(0)
     if obj:
         obj.update_time = update_time
     else:
-        obj = models.MetaSlurmLastUpdate(id=0, update_time=update_time)
+        obj = tables.MetaSlurmLastUpdate(id=0, update_time=update_time)
         session.add(obj)
     session.commit()
 
 def get_last_timestamp(session):
     """Return the last update timestamp from the database"""
-    obj = session.query(models.MetaSlurmLastUpdate).get(0)
+    obj = session.query(tables.MetaSlurmLastUpdate).get(0)
     return obj.update_time
 
 

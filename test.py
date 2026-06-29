@@ -14,7 +14,7 @@ import pytest
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
-
+from sqlalchemy.exc import OperationalError
 
 import slurm2sql.slurm2sql as slurm2sql
 from slurm2sql.slurm2sql import unixtime
@@ -145,6 +145,7 @@ def test_quiet(db, engine, data1, caplog, capfd):
     slurm2sql.main(['dummy', '--history-start=2019-01-01', '-q'], csv_input=data1, db=(engine,db))
     #assert caplog.text == ""
     captured = capfd.readouterr()
+    print(captured)
     assert captured.out == ""
     assert captured.err == ""
 
@@ -179,7 +180,7 @@ def test_cpueff(db, setup_db):
     assert fetch(db, 1, 'TotalCPU') == 1500
     assert fetch(db, 1, 'CPUeff', table='eff') == 0.5
 
-def test_cpueff_steps(db):
+def test_cpueff_steps(db, setup_db):
     data = """
     JobID,CPUTime,TotalCPU,TRESUsageInTot
     1,   50:00, 02:00,
@@ -187,7 +188,7 @@ def test_cpueff_steps(db):
     1.2, 25:00, 24:00, cpu=00:25:00
     """
     slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))
-    print(db.execute('select * from eff;').fetchall())
+    print(db.execute(text('select * from eff;')).fetchall())
     #assert fetch(db, 1, 'CPUTime') == 3000
     #assert fetch(db, 1, 'TotalCPU') == 1500
     assert fetch(db, 1, 'CPUeff', table='eff') == 1.0
@@ -195,25 +196,25 @@ def test_cpueff_steps(db):
     assert fetch(db, 1, 'cpu_s_used', table='eff') == 3000
 
 
-def test_memeff(db):
+def test_memeff(db, setup_db):
     data = """
     JobID,AllocTRES,TRESUsageInTot
     1,mem=1000K,mem=500K
     2,mem=0K,mem=0K
     """
     slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))
-    print(db.execute('select * from eff;').fetchall())
+    print(db.execute(text('select * from eff;')).fetchall())
     assert fetch(db, 1, 'Memeff', table='eff') == 0.5
     assert fetch(db, 2, 'Memeff', table='eff') == None
 
 
-def test_gpueff(db):
+def test_gpueff(db, setup_db):
     data = """
     JobID,Elapsed,AllocTRES,  TRESUsageInTot
     1,    1:00,   gres/gpu=1, gres/gpuutil=23
     """
     slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))
-    print(db.execute('select * from eff;').fetchall())
+    print(db.execute(text('select * from eff;')).fetchall())
     assert fetch(db, 1, 'GpuEff', table='eff') == 0.23
 
 
@@ -224,26 +225,26 @@ def test_gpueff(db):
 def test_cmdline(dbfile):
     ten_days_ago = (datetime.datetime.today() - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
     five_days_ago = (datetime.datetime.today() - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
-    os.system('python3 slurm2sql.py %s -- -S %s'%(dbfile, ten_days_ago))
-    os.system('python3 slurm2sql.py %s -- -S %s -E %s'%(
+    os.system('python3 -m slurm2sql.slurm2sql %s -- -S %s'%(dbfile, ten_days_ago))
+    os.system('python3 -m slurm2sql.slurm2sql %s -- -S %s -E %s'%(
         dbfile, ten_days_ago, five_days_ago))
     sqlite3.connect(dbfile).execute('SELECT JobName from slurm;')
 
 @pytest.mark.skipif(not has_sacct, reason="Can only be tested with sacct")
 def test_cmdline_history_days(dbfile):
-    os.system('python3 slurm2sql.py --history-days=10 %s --'%dbfile)
+    os.system('python3 -m slurm2sql.slurm2sql --history-days=10 %s --'%dbfile)
     sqlite3.connect(dbfile).execute('SELECT JobName from slurm;')
 
 @pytest.mark.skipif(not has_sacct, reason="Can only be tested with sacct")
 def test_cmdline_history_start(dbfile):
     ten_days_ago = (datetime.datetime.today() - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
-    os.system('python3 slurm2sql.py --history-start=%s %s --'%(ten_days_ago, dbfile))
+    os.system('python3  -m slurm2sql.slurm2sql --history-start=%s %s --'%(ten_days_ago, dbfile))
     sqlite3.connect(dbfile).execute('SELECT JobName from slurm;')
 
 @pytest.mark.skipif(not has_sacct, reason="Can only be tested with sacct")
 def test_cmdline_history(dbfile):
     print('x')
-    os.system('python3 slurm2sql.py --history=2-10 %s --'%dbfile)
+    os.system('python3  -m slurm2sql.slurm2sql --history=2-10 %s --'%dbfile)
     sqlite3.connect(dbfile).execute('SELECT JobName from slurm;')
 
 #
@@ -343,7 +344,7 @@ def test_slurm_time():
     assert slurm2sql.slurmtime('3-13:10') == 3600*24*3 + 13*3600 + 600
     assert slurm2sql.slurmtime('3-13') == 3600*24*3 + 13*3600
 
-def test_history_last_timestamp(db, slurm_version):
+def test_history_last_timestamp(db, slurm_version, setup_db):
     """Test update_last_timestamp and get_last_timestamp functions"""
     import io
     # initialize db with null input - this just forces table creation.
@@ -352,25 +353,25 @@ def test_history_last_timestamp(db, slurm_version):
     slurm2sql.update_last_timestamp(db, 13)
     assert slurm2sql.get_last_timestamp(db) == 13
 
-def test_history_resume_basic(db, data1):
+def test_history_resume_basic(db, engine, data1, setup_db):
     """Test --history-resume"""
     # Run it once.  Is the update_time approximately now?
-    slurm2sql.main(['dummy', '--history-days=1'], csv_input=data1, db=db)
+    slurm2sql.main(['dummy', '--history-days=1'], csv_input=data1, db=(engine,db))
     update_time = slurm2sql.get_last_timestamp(db)
     assert abs(update_time - time.time()) < 5
     # Wait 1s, is update time different?
     time.sleep(1.1)
-    slurm2sql.main(['dummy', '--history-resume'], csv_input=data1, db=db)
+    slurm2sql.main(['dummy', '--history-resume'], csv_input=data1, db=(engine,db))
     assert update_time != slurm2sql.get_last_timestamp(db)
 
-def test_history_resume_timestamp(db, data1, caplog):
+def test_history_resume_timestamp(db, engine, data1, setup_db, caplog):
     """Test --history-resume's exact timestamp"""
     # Run once to get an update_time
-    slurm2sql.main(['dummy', '--history-days=1'], csv_input=data1, db=db)
+    slurm2sql.main(['dummy', '--history-days=1'], csv_input=data1, db=(engine,db))
     update_time = slurm2sql.get_last_timestamp(db)
     caplog.clear()
     # Run again and make sure that we filter based on that update_time
-    slurm2sql.main(['dummy', '--history-resume'], csv_input=data1, db=db)
+    slurm2sql.main(['dummy', '--history-resume'], csv_input=data1, db=(engine,db))
     assert slurm2sql.slurm_timestamp(update_time) in caplog.text
 
 @pytest.mark.parametrize(
@@ -387,14 +388,14 @@ def test_slurm_version(string, version):
 
 # Test slurm 20.11 version
 #@pytest.mark.parametrize('slurm_version_number', [(20, 12, 5)])
-def test_slurm2011_gres(db, data2):
+def test_slurm2011_gres(db, setup_db, data2):
     """Test 20.11 compatibility, using ReqTRES instead of ReqGRES.
 
     This asserts that the ReqGRES column is *not* in the database with Slurm > 20.11
     """
-    test_slurm2sql_basic(db, data2)
-    with pytest.raises(sqlite3.OperationalError, match='no such column:'):
-        db.execute('SELECT ReqGRES FROM slurm;')
+    test_slurm2sql_basic(db, None, data2)
+    with pytest.raises(OperationalError, match='no such column:'):
+        db.execute(text('SELECT ReqGRES FROM slurm;'))
 
 
 
