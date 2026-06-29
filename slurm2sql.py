@@ -15,7 +15,7 @@ import os
 import re
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
-import models
+from models import models
 import subprocess
 import sys
 import time
