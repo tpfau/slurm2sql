@@ -15,7 +15,7 @@ import os
 import re
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
-from models import models
+from slurm2sql.models import models
 import subprocess
 import sys
 import time
@@ -768,16 +768,18 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
             
         # Create SQLAlchemy engine                
         engine, session = get_db_from_args(args)        
-        set_up_db(engine, session)        
+        
         db = (engine, session)
-
+    engine, session = db
+    # Ensure that everything exists in main
+    print("setting up db")
+    set_up_db(engine)        
     # If --history-days, get just this many days history
     if (args.history is not None
         or args.history_resume
         or args.history_resume_or_start is not None
         or args.history_days is not None
-        or args.history_start is not None):
-        engine, session = db
+        or args.history_start is not None):        
         errors = get_history(session, sacct_filter=sacct_filter,
                             history=args.history,
                             history_resume=args.history_resume,
@@ -793,8 +795,7 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
 
         create_indexes(session)
     # Normal operation
-    else:
-        engine, session = db
+    else:        
         errors = slurm2sql(session, sacct_filter=sacct_filter,
                            update=args.update,
                            jobs_only=args.jobs_only,
@@ -885,15 +886,58 @@ def sacct(slurm_cols, sacct_filter):
     return p.stdout
 
 
-def create_indexes(session):    
-    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidnostep ON slurm (JobIDnostep)'))
-    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_start ON slurm (Start)'))
-    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_start ON slurm (User, Start)'))
-    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm (Time)'))
-    session.connection().execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm (User, Time)'))
-    session.connection().execute(text('ANALYZE'))
+def create_indexes(connection: Session):    
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidnostep ON slurm (JobIDnostep)'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_start ON slurm (Start)'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_start ON slurm (User, Start)'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm (Time)'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm (User, Time)'))
+    connection.execute(text('ANALYZE'))
 
 
+def create_views(connection):
+    print("Setting up views")
+    connection.execute(text('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null'))
+    connection.execute(text('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null'))
+    connection.execute(text(
+        'CREATE VIEW IF NOT EXISTS eff AS select '
+        'JobIDnostep AS JobID, '
+        'max(User) AS User, '
+            'max(Partition) AS Partition, '
+            '(SELECT s2.JobName FROM slurm AS s2 WHERE s2.JobIDnostep = slurm1.JobIDnostep AND s2.JobStep IS null LIMIT 1) AS JobName,'
+            'group_concat(SubmitLine, \'\n\') AS SubmitLines, '
+            'Account, '
+            '(SELECT State FROM allocations AS allocations2 WHERE allocations2.jobid=slurm1.JobIDnostep) AS State, '
+            'NodeList, '
+            'Time, '
+            'max(TimeLimit) AS TimeLimit, '
+            'min(Start) AS Start, '
+            'max(End) AS End, '
+            'max(NNodes) AS NNodes, '
+            'ReqTRES, '
+            'max(Elapsed) AS Elapsed, '
+            'max(NCPUS) AS NCPUS, '
+            'sum(totalcpu)/max(cputime) AS CPUeff, '
+            'max(cputime) AS cpu_s_reserved, '
+            'sum(totalcpu) AS cpu_s_used, '
+            'max(ReqMemNode) AS MemReq, '
+            'max(AllocMem) AS AllocMem, '
+            'max(TotalMem) AS TotalMem, '
+            'max(MaxRSS) AS MaxRSS, '
+            'max(MemEff) AS MemEff, '
+            'max(AllocMem*Elapsed) AS mem_s_reserved, '
+            'max(NGpus) AS NGpus, '
+            'max(GPUType) AS GPUType, '
+            'max(NGpus)*max(Elapsed) AS gpu_s_reserved, '
+            'max(NGpus)*max(Elapsed)*max(GpuUtil) AS gpu_s_used, '
+            'sum(GpuUtil*Elapsed)/max(Ngpus*Elapsed) AS GpuEff, '
+            'max(GpuMem) AS GpuMem, '
+            'MaxDiskRead, '
+            'MaxDiskWrite, '
+            'sum(TotDiskRead) as TotDiskRead, '
+            'sum(TotDiskWrite) as TotDiskWrite '
+            'FROM slurm AS slurm1 GROUP BY JobIDnostep'
+        ))
 def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
     """Iterate through sacct, returning rows as dicts"""
     # Read data from sacct, or interpert sacct_filter directly as
@@ -934,10 +978,12 @@ def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
         yield line
 
 
-def set_up_db(engine, session : Session):
+def set_up_db(engine):
     """Create the database tables if they don't exist"""
     models.Base.metadata.create_all(engine)
-    create_indexes(session)
+    with engine.begin() as conn:
+        create_views(conn)        
+        create_indexes(conn)
     
 
 def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=False,
@@ -967,49 +1013,8 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
         elif cd == str: return 'text'
         return ''    
     # Create views using raw SQL where supported
-    session.connection().execute(text('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null'))
-    session.connection().execute(text('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null'))
-    session.connection().execute(text(
-        'CREATE VIEW IF NOT EXISTS eff AS select '
-        'JobIDnostep AS JobID, '
-        'max(User) AS User, '
-            'max(Partition) AS Partition, '
-            '(SELECT s2.JobName FROM slurm AS s2 WHERE s2.JobIDnostep = slurm1.JobIDnostep AND s2.JobStep IS null LIMIT 1) AS JobName,'
-            'group_concat(SubmitLine, \'\n\') AS SubmitLines, '
-            'Account, '
-            '(SELECT State FROM allocations AS allocations2 WHERE allocations2.jobid=slurm1.JobIDnostep) AS State, '
-            'NodeList, '
-            'Time, '
-            'max(TimeLimit) AS TimeLimit, '
-            'min(Start) AS Start, '
-            'max(End) AS End, '
-            'max(NNodes) AS NNodes, '
-            'ReqTRES, '
-            'max(Elapsed) AS Elapsed, '
-            'max(NCPUS) AS NCPUS, '
-            'sum(totalcpu)/max(cputime) AS CPUeff, '
-            'max(cputime) AS cpu_s_reserved, '
-            'sum(totalcpu) AS cpu_s_used, '
-            'max(ReqMemNode) AS MemReq, '
-            'max(AllocMem) AS AllocMem, '
-            'max(TotalMem) AS TotalMem, '
-            'max(MaxRSS) AS MaxRSS, '
-            'max(MemEff) AS MemEff, '
-            'max(AllocMem*Elapsed) AS mem_s_reserved, '
-            'max(NGpus) AS NGpus, '
-            'max(GPUType) AS GPUType, '
-            'max(NGpus)*max(Elapsed) AS gpu_s_reserved, '
-            'max(NGpus)*max(Elapsed)*max(GpuUtil) AS gpu_s_used, '
-            'sum(GpuUtil*Elapsed)/max(Ngpus*Elapsed) AS GpuEff, '
-            'max(GpuMem) AS GpuMem, '
-            'MaxDiskRead, '
-            'MaxDiskWrite, '
-            'sum(TotDiskRead) as TotDiskRead, '
-            'sum(TotDiskWrite) as TotDiskWrite '
-            'FROM slurm AS slurm1 GROUP BY JobIDnostep'
-        ))
+    print("creating views")   
     c = None
-
     slurm_cols = tuple(c for c in list(columns.keys()) + COLUMNS_EXTRA if not c.startswith('_'))
 
     errors = [ 0 ]
@@ -1047,13 +1052,13 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
             if existing:
                 for kk, vv in processed_row.items():
                     setattr(existing, kk, vv)
-            else:
+            else:                
                 session.add(models.Slurm(**processed_row))
         else:
             session.add(models.Slurm(**processed_row))
 
         # Committing every so often allows other queries to succeed
-        if i%10000 == 0:
+        if i%10000 == 0:            
             session.commit()
             if verbose:
                 print('... processing row %d'%i)
@@ -1124,7 +1129,7 @@ def import_or_open_db(args, sacct_filter, csv_input=None):
         engine = create_engine('sqlite:///:memory:')
         Session = sessionmaker(bind=engine)
         session = Session()
-        set_up_db(engine, session)
+        set_up_db(engine)
         slurm2sql(session, sacct_filter=sacct_filter,
                  csv_input=getattr(args, 'csv_input', False) or csv_input)
         return engine, session
