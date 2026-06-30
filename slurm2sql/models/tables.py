@@ -14,7 +14,7 @@ class Slurm(Base):
     JobIDonly = Column(Integer)
     JobStep = Column(String)
     ArrayTaskID = Column(Integer)
-    JobIDRawonly = Column(Integer)
+    JobIDRawOnly = Column(Integer)
 
     # Metadata
     JobName = Column(String)

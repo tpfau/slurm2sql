@@ -20,6 +20,8 @@ import subprocess
 import sys
 import time
 
+from slurm2sql.squeue import SQUEUE
+
 __version__ = '0.9.9'
 
 LOG = logging.getLogger('slurm2sql')
@@ -435,7 +437,7 @@ class slurmJobIDnostep(linefunc):
         if 'JobID' not in row: return
         return jobidnostep_re.match(row['JobID']).group(0)
 
-class slurmJobIDrawonly(linefunc):
+class slurmJobIDRawOnly(linefunc):
     """The (raw) JobID without any . or _.  This is different for every job in an array."""
     type = 'int'
     @staticmethod
@@ -591,7 +593,7 @@ COLUMNS = {
     '_JobIDonly': slurmJobIDonly,       # Integer JobID without '_' or '.' suffixes
     '_JobStep': slurmJobStep,           # Part after '.'
     '_ArrayTaskID': slurmArrayTaskID,   # Part between '_' and '.'
-    '_JobIDRawonly': slurmJobIDrawonly,
+    '_JobIDRawOnly': slurmJobIDRawOnly,
                                         # if array jobs, unique ID for each array task,
                                         # otherwise JobID
 
@@ -891,6 +893,7 @@ def create_indexes(connection: Session):
     connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_start ON slurm (User, Start)'))
     connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm (Time)'))
     connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm (User, Time)'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidrawonly ON slurm (JobIDRawOnly)'))
     connection.execute(text('ANALYZE'))
 
 
@@ -898,33 +901,48 @@ def create_views(connection):
     connection.execute(text('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null'))
     connection.execute(text('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null'))
     connection.execute(text(
-        'CREATE VIEW IF NOT EXISTS eff AS select '
-        'JobIDnostep AS JobID, '
-        'max(User) AS User, '
+            'CREATE VIEW IF NOT EXISTS eff AS select '
+            'CASE '
+            'WHEN max(State) = \'PENDING\' THEN JobID '
+            'ELSE JobIDnostep '
+            'END AS JobID, '
+            'max(User) AS User, '
             'max(Partition) AS Partition, '
             '(SELECT s2.JobName FROM slurm AS s2 WHERE s2.JobIDnostep = slurm1.JobIDnostep AND s2.JobStep IS null LIMIT 1) AS JobName,'
             'group_concat(SubmitLine, \'\n\') AS SubmitLines, '
             'Account, '
-            '(SELECT State FROM allocations AS allocations2 WHERE allocations2.jobid=slurm1.JobIDnostep) AS State, '
+            '(SELECT State FROM allocations AS allocations2 WHERE allocations2.JobIDRawOnly=slurm1.JobIDRawOnly) AS State, '
             'NodeList, '
             'Time, '
             'max(TimeLimit) AS TimeLimit, '
             'min(Start) AS Start, '
             'max(End) AS End, '
-            'max(NNodes) AS NNodes, '
+            'CASE '
+            'WHEN max(State) = \'PENDING\' THEN max(ReqNodes) '
+            'ELSE max(NNodes) '
+            'END AS NNodes, '            
             'ReqTRES, '
             'max(Elapsed) AS Elapsed, '
-            'max(NCPUS) AS NCPUS, '
+            'CASE '
+            'WHEN max(State) = \'PENDING\' THEN max(ReqCPUS) '
+            'ELSE max(NCPUS) '
+            'END AS NCPUS, '
             'sum(totalcpu)/max(cputime) AS CPUeff, '
             'max(cputime) AS cpu_s_reserved, '
             'sum(totalcpu) AS cpu_s_used, '
-            'max(ReqMemNode) AS MemReq, '
+            'CASE '
+            'WHEN max(State) = \'PENDING\' THEN max(ReqMem) '
+            'ELSE max(ReqMemNode) '
+            'END AS MemReq, '            
             'max(AllocMem) AS AllocMem, '
             'max(TotalMem) AS TotalMem, '
             'max(MaxRSS) AS MaxRSS, '
             'max(MemEff) AS MemEff, '
             'max(AllocMem*Elapsed) AS mem_s_reserved, '
-            'max(NGpus) AS NGpus, '
+            'CASE '
+            'WHEN max(State) = \'PENDING\' THEN max(ReqGPUS) '
+            'ELSE max(NGpus) '
+            'END AS NGpus, '            
             'max(GPUType) AS GPUType, '
             'max(NGpus)*max(Elapsed) AS gpu_s_reserved, '
             'max(NGpus)*max(Elapsed)*max(GpuUtil) AS gpu_s_used, '
@@ -1005,7 +1023,7 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
     Returns: the number of errors
     """
     columns = COLUMNS.copy()
-
+    print("Running slurm2sql")
 
     def infer_type(cd):
         if hasattr(cd, 'type'): return cd.type
@@ -1060,7 +1078,22 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
             session.commit()
             if verbose:
                 print('... processing row %d'%i)
+    # Now, also parse the Squeue for everything that is running or pending, and update the 
+    # Database with the latest information    
     session.commit()
+    # And finally do a SQUEUE to update the pending jobs with the latest information
+    if csv_input is None and raw_sacct is None:
+        # Update database from SQUEUE
+        squeue = SQUEUE()
+        queue_ids = squeue.get_scheduled_ids()
+        # Put all updates in the transaction.
+        for job_id in queue_ids:
+            session.query(tables.Slurm).filter_by(JobID=job_id).update(squeue.get_update(job_id))
+        # And now commit.
+        session.commit()
+    else:
+        print(f"Skipping SQUEUE update since we are using CSV {csv_input is not None} or raw sacct input {raw_sacct is not None}")
+    print("Finishing")
     return errors[0]
 
 
