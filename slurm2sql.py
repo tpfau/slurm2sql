@@ -948,7 +948,10 @@ def slurm2sql(db, sacct_filter=['-a'], update=False, jobs_only=False,
     db.execute('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null;')
     db.execute('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null;')
     db.execute('CREATE VIEW IF NOT EXISTS eff AS select '
-               'JobIDnostep AS JobID, '
+               'CASE '
+               'WHEN State = \'PENDING\' THEN JobID '
+               'ELSE JobIDnostep '
+               'END AS JobID, '
                'max(User) AS User, '
                'max(Partition) AS Partition, '
                '(SELECT s2.JobName FROM slurm AS s2 WHERE s2.JobIDnostep = slurm1.JobIDnostep AND s2.JobStep IS null LIMIT 1) AS JobName,'
