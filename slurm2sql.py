@@ -954,7 +954,7 @@ def slurm2sql(db, sacct_filter=['-a'], update=False, jobs_only=False,
                '(SELECT s2.JobName FROM slurm AS s2 WHERE s2.JobIDnostep = slurm1.JobIDnostep AND s2.JobStep IS null LIMIT 1) AS JobName,'
                'group_concat(SubmitLine, \'\n\') AS SubmitLines, '
                'Account, '
-               '(SELECT State FROM allocations AS allocations2 WHERE allocations2.jobid=slurm1.JobIDnostep) AS State, '
+               '(SELECT State FROM allocations AS allocations2 WHERE allocations2.JobIDRawOnly=slurm1.JobIDRawOnly) AS State, '
                #'State AS State, '
                'NodeList, '
                'Time, '
