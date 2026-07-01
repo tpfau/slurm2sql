@@ -1031,12 +1031,13 @@ def build_eff_statement(dialect_name: str):
     # -----------------------------
     a = aliased(Allocation)
 
-    State = (
-        select(a.State)
-        .where(a.JobIDRawOnly == s.JobIDRawOnly)
-        .limit(1)
-        .scalar_subquery()
-        .label("State")
+    alloc_state = (
+        select(
+            a.JobIDRawOnly,
+            func.max(a.State).label("State")  # or min / latest depending on semantics
+        )
+        .group_by(a.JobIDRawOnly)
+        .subquery()
     )
 
     # -----------------------------
@@ -1050,7 +1051,7 @@ def build_eff_statement(dialect_name: str):
             JobName,
             submit_agg.label("SubmitLines"),
             Account,
-            State,
+            alloc_state.c.State.label("State"),
             NodeList,
             Time,
             TimeLimit,
@@ -1079,6 +1080,11 @@ def build_eff_statement(dialect_name: str):
             MaxDiskWrite,
             TotDiskRead,
             TotDiskWrite,
+        )
+        .select_from(s)
+        .outerjoin(
+            alloc_state,
+            alloc_state.c.JobIDRawOnly == s.JobIDRawOnly
         )
         .group_by(s.JobIDnostep)
     )
