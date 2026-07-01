@@ -17,7 +17,6 @@ def run_command(cmd):
 class SQUEUE:
     def __init__(self):
         job_data = parse_squeue_output()
-        print(job_data)
         self.pending_data = {
             job["ID"]: {
                 "start": datetime.fromisoformat(job["Start"]).timestamp() if job["Start"].strip() != "N/A" else None,

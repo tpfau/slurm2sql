@@ -6,6 +6,7 @@
 """
 
 from __future__ import division, print_function
+from typing import Optional, Type, Any, TypeVar
 
 import argparse
 import datetime
@@ -33,6 +34,7 @@ else:
     ch.setLevel(logging.DEBUG)
     LOG.addHandler(ch)
 
+T = TypeVar("T")
 
 #
 # First, many converter functions/classes which convert strings to
@@ -41,35 +43,35 @@ else:
 
 # Single converter functions: transform one column to sqlite value
 # stored as that same column.
-def settype(type):
+def settype(type : Type):
     """Decorator: Set type of function, for sql column definitions."""
-    def _(x):
+    def _(x : Any) -> Any:
         x.type = type
         return x
     return _
 
 @settype('int')
-def int_(x):
+def int_(x : Any) -> int:
     """int"""
     return (int(x))
 
 @settype('int')
-def nullint(x):
+def nullint(x : Any) -> int | None:
     """int or None"""
     return int(x) if x else None
 
 @settype('text')
-def nullstr(x):
+def nullstr(x: Any) -> str | None:
     """str or None"""
     return str(x) if x else None
 
 @settype('text')
-def nullstr_strip(x):
+def nullstr_strip(x: Any) -> str | None:
     """str or None"""
     return str(x).strip() if x else None
 
 @settype('int')
-def unixtime(x):
+def unixtime(x : str) -> int | None:
     """Timestamp in local time, converted to unixtime"""
     if not x:           return None
     if x == 'Unknown':  return None
@@ -77,7 +79,7 @@ def unixtime(x):
     return time.mktime(time.strptime(x, '%Y-%m-%dT%H:%M:%S'))
 
 @settype('int')
-def datetime_timestamp(dt):
+def datetime_timestamp(dt: datetime.datetime) -> int:
     """Convert a datetime object to unixtime
 
     - Only needed because we support python 2"""
@@ -86,7 +88,7 @@ def datetime_timestamp(dt):
     return time.mktime(dt.timetuple())
 
 @settype('real')
-def slurmtime(x):
+def slurmtime(x: str) -> float | None:
     """Parse slurm time of format [dd-[hh:]]mm:ss"""
     if not x: return None
     # Handle 'UNLIMITED' ,'Partition_Limit' in 'timelimit' field
@@ -111,7 +113,7 @@ def slurmtime(x):
     return seconds
 
 @settype('text')
-def slurm_timestamp(x):
+def slurm_timestamp(x: datetime.datetime | float | int) -> str:
     """Convert a datetime to the Slurm format of timestamp
     """
     if not isinstance(x, datetime.datetime):
@@ -119,30 +121,30 @@ def slurm_timestamp(x):
     return x.strftime('%Y-%m-%dT%H:%M:%S')
 
 @settype('text')
-def str_unknown(x):
+def str_unknown(x : str) -> str | None:
     if x == 'Unknown': return None
     return x
 
 @settype('real')
-def slurmmem(x):
+def slurmmem(x: Any) -> float | None:
     """Memory, removing 'n' or 'c' at end, in KB"""
     if not x:  return None
     x = x.strip('nc')
     return float_bytes(x)
 
 # Converting kibi/mibi, etc units to numbers
-def unit_value_binary(unit):
+def unit_value_binary(unit : str) -> int:
     """Convert a unit to its value, e.g. 'K'-->1024, 'M'-->1048576"""
     if unit is None: unit = '_'
     return 2**(10*'_kmgtpezy'.index(unit.lower()))
 
-def unit_value_metric(unit):
+def unit_value_metric(unit: str) -> int:
     """Convert a unit to its value, e.g. 'K'-->1000, 'M'-->1000000"""
     if unit is None: unit = '_'
     return 1000**('_kmgtpezy'.index(unit.lower()))
 
 @settype('real')
-def float_bytes(x, convert=float):
+def float_bytes(x : str, convert : type[T] = float) -> T | None:
     """Convert a float with unit (K,M, etc) to value"""
     if not x:  return None
     unit = x[-1].lower()
@@ -151,11 +153,11 @@ def float_bytes(x, convert=float):
     return convert(x)
 
 @settype('int')
-def int_bytes(x):
+def int_bytes(x : str) -> int | None:
     return float_bytes(x, convert=lambda x: int(float(x)))
 
 @settype('real')
-def float_metric(x, convert=float):
+def float_metric(x: str, convert : type[T] = float) -> T | None:
     """Convert a float with unit (K,M, etc) to value"""
     if not x:  return None
     unit = x[-1].lower()
@@ -164,7 +166,7 @@ def float_metric(x, convert=float):
     return convert(x)
 
 @settype('int')
-def int_metric(x):
+def int_metric(x: str) -> int | None:
     return float_metric(x, convert=lambda x: int(float(x)))
 
 # Row converter fuctions which need *all* values to convert.  Classes
@@ -179,7 +181,7 @@ class linefunc(object):
 
 
 # Generic extractor-generator function.
-def ExtractField(name, columnname, fieldname, type_, wrap=None):
+def ExtractField(name : str, columnname : str, fieldname : str, type_ : Type, wrap : Optional[Any]=None):
     """Extract a field out of a column, in the TRES/GRSE column formats.
 
     Example: 'gres/gpuutil'
@@ -839,7 +841,6 @@ def get_history(session, sacct_filter=['-a'],
         except:
             import traceback
             traceback.print_exc()
-            print()
             print("Could not fetch last start time (see above), starting from now instead", file=sys.stderr)
         start = datetime.datetime.fromtimestamp(start - 5)
     elif history is not None:
@@ -879,6 +880,7 @@ def sacct(slurm_cols, sacct_filter):
            '--delimiter=;|;',
            #'--allocations',  # no job steps, only total jobs, but doesn't show used resources.
            ] + list(sacct_filter)
+    print(cmd)
     #LOG.debug(' '.join(cmd))
     error_handling = {'errors':'replace'} if sys.version_info[0]>=3 else {}
     p = subprocess.Popen(cmd,
@@ -1023,7 +1025,6 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
     Returns: the number of errors
     """
     columns = COLUMNS.copy()
-    print("Running slurm2sql")
 
     def infer_type(cd):
         if hasattr(cd, 'type'): return cd.type
@@ -1093,7 +1094,6 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
         session.commit()
     else:
         print(f"Skipping SQUEUE update since we are using CSV {csv_input is not None} or raw sacct input {raw_sacct is not None}")
-    print("Finishing")
     return errors[0]
 
 
