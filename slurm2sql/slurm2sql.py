@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import re
-from sqlalchemy import column, create_engine, inspect, text, Engine, select, func, case, table
+from sqlalchemy import String, column, create_engine, inspect, text, Engine, select, func, case, table
 from sqlalchemy.orm import sessionmaker, Session, aliased
 from slurm2sql.models import tables, Slurm, Allocation
 import subprocess
@@ -906,12 +906,6 @@ def create_view(engine : Engine, name : str, view_spec : str):
         with engine.begin() as conn:
             conn.execute(text(f'CREATE VIEW {name} AS {view_spec}'))
             conn.commit()            
-
-def submit_agg(engine):
-    if engine.dialect.name == "sqlite":
-        return func.group_concat(column("SubmitLine"), "\n")
-    else:
-        return func.string_agg(column("SubmitLine"), "\n")
     
 def build_eff_statement(dialect_name: str):
     """
@@ -938,8 +932,8 @@ def build_eff_statement(dialect_name: str):
     # JobID logic
     # -----------------------------
     JobID = case(
-        (pending, func.max(s.JobID)),
-        else_=func.max(s.JobIDnostep),
+        (pending, func.cast(func.max(s.JobID), String)),
+        else_=func.cast(func.max(s.JobIDnostep), String),
     ).label("JobID")
 
     # -----------------------------
