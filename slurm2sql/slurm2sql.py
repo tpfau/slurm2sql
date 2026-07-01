@@ -908,8 +908,8 @@ def create_view(engine : Engine, name : str, view_spec : str):
             conn.commit()            
 
 def create_views(connection):
-    create_view(connection, 'allocations', 'select * from slurm where JobStep is null')
-    create_view(connection, 'steps', 'select * from slurm where JobStep is not null')
+    create_view(connection, 'allocations', 'select * from slurm where slurm.JobStep is null')
+    create_view(connection, 'steps', 'select * from slurm where slurm.JobStep is not null')
     create_view(connection, 'eff', 
             'select '
             'CASE '
