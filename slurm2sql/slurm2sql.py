@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import re
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text, Engine
 from sqlalchemy.orm import sessionmaker, Session
 from slurm2sql.models import tables
 import subprocess
@@ -899,11 +899,19 @@ def create_indexes(connection: Session):
     connection.execute(text('ANALYZE'))
 
 
+def create_view(engine : Engine, name : str, view_spec : str):
+    """Create a view in the database"""
+    inspector = inspect(engine)
+    if name not in inspector.get_view_names():
+        with engine.begin() as conn:
+            conn.execute(text(f'CREATE VIEW {name} AS {view_spec}'))
+            conn.commit()            
+
 def create_views(connection):
-    connection.execute(text('CREATE VIEW IF NOT EXISTS allocations AS select * from slurm where JobStep is null'))
-    connection.execute(text('CREATE VIEW IF NOT EXISTS steps AS select * from slurm where JobStep is not null'))
-    connection.execute(text(
-            'CREATE VIEW IF NOT EXISTS eff AS select '
+    create_view(connection, 'allocations', 'select * from slurm where JobStep is null')
+    create_view(connection, 'steps', 'select * from slurm where JobStep is not null')
+    create_view(connection, 'eff', 
+            'select '
             'CASE '
             'WHEN max(State) = \'PENDING\' THEN JobID '
             'ELSE JobIDnostep '
@@ -955,7 +963,7 @@ def create_views(connection):
             'sum(TotDiskRead) as TotDiskRead, '
             'sum(TotDiskWrite) as TotDiskWrite '
             'FROM slurm AS slurm1 GROUP BY JobIDnostep'
-        ))
+        )
 def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
     """Iterate through sacct, returning rows as dicts"""
     # Read data from sacct, or interpert sacct_filter directly as
@@ -1000,8 +1008,8 @@ def set_up_db(engine):
     """Create the database tables if they don't exist"""
     # Remove views from metadata for creation    
     tables.Base.metadata.create_all(engine)
-    with engine.begin() as conn:
-        create_views(conn)        
+    create_views(engine)      
+    with engine.begin() as conn:          
         create_indexes(conn)
     
 
