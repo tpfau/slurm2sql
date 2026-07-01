@@ -1051,7 +1051,7 @@ def build_eff_statement(dialect_name: str):
             JobName,
             submit_agg.label("SubmitLines"),
             Account,
-            alloc_state.c.State.label("State"),
+            func.max(alloc_state.c.State).label("State"),
             NodeList,
             Time,
             TimeLimit,
