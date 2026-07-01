@@ -1,7 +1,7 @@
 
 from typing import TYPE_CHECKING
 from sqlalchemy import Column, Integer, Float, String, Text, Table, MetaData
-from sqlalchemy.orm import registry
+from sqlalchemy.orm import registry, Mapped
 mapper_registry = registry()
 
 metadata = MetaData()
@@ -9,96 +9,96 @@ metadata = MetaData()
 
 class Allocation:
     if TYPE_CHECKING:
-        id : Integer
-        JobID : String
-        JobIDnostep : Integer
-        JobIDonly : Integer
-        JobStep : String
-        ArrayTaskID : Integer
-        JobIDRawOnly : Integer
+        id : Mapped[Integer]
+        JobID : Mapped[String]
+        JobIDnostep : Mapped[Integer]
+        JobIDonly : Mapped[Integer]
+        JobStep : Mapped[String]
+        ArrayTaskID : Mapped[Integer]
+        JobIDRawOnly : Mapped[Integer]
 
         # Metadata
-        JobName : String
-        User : String
-        Group : String
-        Account : String
-        SubmitLine : Text
-        Billing : Integer
+        JobName : Mapped[String]
+        User : Mapped[String]
+        Group : Mapped[String]
+        Account : Mapped[String]
+        SubmitLine : Mapped[Text]
+        Billing : Mapped[Integer]
 
         # Times and runtime info
-        State : String
-        Timelimit : Float
-        Elapsed : Float
-        Time : Integer
-        Submit : Integer
-        Start : Integer
-        End : Integer
-        QueueTime : Integer
-        Partition : String
-        ExitCodeRaw : String
-        ExitCode : Integer
-        ExitSignal : Integer
-        NodeList : String
-        Priority : Integer
-        ConsumedEnergy : Integer
+        State : Mapped[String]
+        Timelimit : Mapped[Float]
+        Elapsed : Mapped[Float]
+        Time : Mapped[Integer]
+        Submit : Mapped[Integer]
+        Start : Mapped[Integer]
+        End : Mapped[Integer]
+        QueueTime : Mapped[Integer]
+        Partition : Mapped[String]
+        ExitCodeRaw : Mapped[String]
+        ExitCode : Mapped[Integer]
+        ExitSignal : Mapped[Integer]
+        NodeList : Mapped[String]
+        Priority : Mapped[Integer]
+        ConsumedEnergy : Mapped[Integer]
 
         # Nodes
-        ReqNodes : Integer
-        NNodes : Integer
-        AllocNodes : Integer
+        ReqNodes : Mapped[Integer]
+        NNodes : Mapped[Integer]
+        AllocNodes : Mapped[Integer]
 
         # Resources
-        ReqTRES : Text
-        NTasks : Integer
-        AllocTRES : Text
-        TRESUsageInTot : Text
-        TRESUsageOutTot : Text
+        ReqTRES : Mapped[Text]
+        NTasks : Mapped[Integer]
+        AllocTRES : Mapped[Text]
+        TRESUsageInTot : Mapped[Text]
+        TRESUsageOutTot : Mapped[Text]
 
         # CPU
-        NCPUS : Integer
-        ReqCPUS : Integer
-        AllocCPUS : Integer
-        CPUTime : Float
-        TotalCPU : Float
-        UserCPU : Float
-        SystemCPU : Float
-        CPUEff : Float
-        MinCPU : Float
-        MinCPUNode : String
-        MinCPUTask : String
+        NCPUS : Mapped[Integer]
+        ReqCPUS : Mapped[Integer]
+        AllocCPUS : Mapped[Integer]
+        CPUTime : Mapped[Float]
+        TotalCPU : Mapped[Float]
+        UserCPU : Mapped[Float]
+        SystemCPU : Mapped[Float]
+        CPUEff : Mapped[Float]
+        MinCPU : Mapped[Float]
+        MinCPUNode : Mapped[String]
+        MinCPUTask : Mapped[String]
 
         # Memory
-        TotalMem : Float
-        AllocMem : Float
-        MemEff : Float
-        ReqMem : Float
-        ReqMemNode : Float
-        ReqMemCPU : Float
-        AveRSS : Float
-        MaxRSS : Float
-        MaxRSSNode : String
-        MaxRSSTask : String
-        MaxPages : Integer
-        MaxVMSize : Float
+        TotalMem : Mapped[Float]
+        AllocMem : Mapped[Float]
+        MemEff : Mapped[Float]
+        ReqMem : Mapped[Float]
+        ReqMemNode : Mapped[Float]
+        ReqMemCPU : Mapped[Float]
+        AveRSS : Mapped[Float]
+        MaxRSS : Mapped[Float]
+        MaxRSSNode : Mapped[String]
+        MaxRSSTask : Mapped[String]
+        MaxPages : Mapped[Integer]
+        MaxVMSize : Mapped[Float]
 
         # Disk
-        AveDiskRead : Integer
-        AveDiskWrite : Integer
-        MaxDiskRead : Integer
-        MaxDiskWrite : Integer
-        TotDiskRead : Float
-        TotDiskWrite : Float
+        AveDiskRead : Mapped[Integer]
+        AveDiskWrite : Mapped[Integer]
+        MaxDiskRead : Mapped[Integer]
+        MaxDiskWrite : Mapped[Integer]
+        TotDiskRead : Mapped[Float]
+        TotDiskWrite : Mapped[Float]
 
         # GPU
-        ReqGPUS : Float
-        Comment : Text
-        GpuEff : Float
-        NGpus : Float
-        GpuType : String
-        GpuUtil : Float
-        GpuMem : Float
-        GpuUtilTot : Float
-        GpuMemTot : Float
+        ReqGPUS : Mapped[Float]
+        Comment : Mapped[Text]
+        GpuEff : Mapped[Float]
+        NGpus : Mapped[Float]
+        GpuType : Mapped[String]
+        GpuUtil : Mapped[Float]
+        GpuMem : Mapped[Float]
+        GpuUtilTot : Mapped[Float]
+        GpuMemTot : Mapped[Float]
     
 
 allocation_view = Table("allocations", metadata, 
@@ -194,96 +194,96 @@ allocation_view = Table("allocations", metadata,
 
 class Step:
     if TYPE_CHECKING:
-        id : Integer
-        JobID : String
-        JobIDnostep : Integer
-        JobIDonly : Integer
-        JobStep : String
-        ArrayTaskID : Integer
-        JobIDRawOnly : Integer
+        id : Mapped[Integer]
+        JobID : Mapped[String]
+        JobIDnostep : Mapped[Integer]
+        JobIDonly : Mapped[Integer]
+        JobStep : Mapped[String]
+        ArrayTaskID : Mapped[Integer]
+        JobIDRawOnly : Mapped[Integer]
 
         # Metadata
-        JobName : String
-        User : String
-        Group : String
-        Account : String
-        SubmitLine : Text
-        Billing : Integer
+        JobName : Mapped[String]
+        User : Mapped[String]
+        Group : Mapped[String]
+        Account : Mapped[String]
+        SubmitLine : Mapped[Text]
+        Billing : Mapped[Integer]
 
         # Times and runtime info
-        State : String
-        Timelimit : Float
-        Elapsed : Float
-        Time : Integer
-        Submit : Integer
-        Start : Integer
-        End : Integer
-        QueueTime : Integer
-        Partition : String
-        ExitCodeRaw : String
-        ExitCode : Integer
-        ExitSignal : Integer
-        NodeList : String
-        Priority : Integer
-        ConsumedEnergy : Integer
+        State : Mapped[String]
+        Timelimit : Mapped[Float]
+        Elapsed : Mapped[Float]
+        Time : Mapped[Integer]
+        Submit : Mapped[Integer]
+        Start : Mapped[Integer]
+        End : Mapped[Integer]
+        QueueTime : Mapped[Integer]
+        Partition : Mapped[String]
+        ExitCodeRaw : Mapped[String]
+        ExitCode : Mapped[Integer]
+        ExitSignal : Mapped[Integer]
+        NodeList : Mapped[String]
+        Priority : Mapped[Integer]
+        ConsumedEnergy : Mapped[Integer]
 
         # Nodes
-        ReqNodes : Integer
-        NNodes : Integer
-        AllocNodes : Integer
+        ReqNodes : Mapped[Integer]
+        NNodes : Mapped[Integer]
+        AllocNodes : Mapped[Integer]
 
         # Resources
-        ReqTRES : Text
-        NTasks : Integer
-        AllocTRES : Text
-        TRESUsageInTot : Text
-        TRESUsageOutTot : Text
+        ReqTRES : Mapped[Text]
+        NTasks : Mapped[Integer]
+        AllocTRES : Mapped[Text]
+        TRESUsageInTot : Mapped[Text]
+        TRESUsageOutTot : Mapped[Text]
 
         # CPU
-        NCPUS : Integer
-        ReqCPUS : Integer
-        AllocCPUS : Integer
-        CPUTime : Float
-        TotalCPU : Float
-        UserCPU : Float
-        SystemCPU : Float
-        CPUEff : Float
-        MinCPU : Float
-        MinCPUNode : String
-        MinCPUTask : String
+        NCPUS : Mapped[Integer]
+        ReqCPUS : Mapped[Integer]
+        AllocCPUS : Mapped[Integer]
+        CPUTime : Mapped[Float]
+        TotalCPU : Mapped[Float]
+        UserCPU : Mapped[Float]
+        SystemCPU : Mapped[Float]
+        CPUEff : Mapped[Float]
+        MinCPU : Mapped[Float]
+        MinCPUNode : Mapped[String]
+        MinCPUTask : Mapped[String]
 
         # Memory
-        TotalMem : Float
-        AllocMem : Float
-        MemEff : Float
-        ReqMem : Float
-        ReqMemNode : Float
-        ReqMemCPU : Float
-        AveRSS : Float
-        MaxRSS : Float
-        MaxRSSNode : String
-        MaxRSSTask : String
-        MaxPages : Integer
-        MaxVMSize : Float
+        TotalMem : Mapped[Float]
+        AllocMem : Mapped[Float]
+        MemEff : Mapped[Float]
+        ReqMem : Mapped[Float]
+        ReqMemNode : Mapped[Float]
+        ReqMemCPU : Mapped[Float]
+        AveRSS : Mapped[Float]
+        MaxRSS : Mapped[Float]
+        MaxRSSNode : Mapped[String]
+        MaxRSSTask : Mapped[String]
+        MaxPages : Mapped[Integer]
+        MaxVMSize : Mapped[Float]
 
         # Disk
-        AveDiskRead : Integer
-        AveDiskWrite : Integer
-        MaxDiskRead : Integer
-        MaxDiskWrite : Integer
-        TotDiskRead : Float
-        TotDiskWrite : Float
+        AveDiskRead : Mapped[Integer]
+        AveDiskWrite : Mapped[Integer]
+        MaxDiskRead : Mapped[Integer]
+        MaxDiskWrite : Mapped[Integer]
+        TotDiskRead : Mapped[Float]
+        TotDiskWrite : Mapped[Float]
 
         # GPU
-        ReqGPUS : Float
-        Comment : Text
-        GpuEff : Float
-        NGpus : Float
-        GpuType : String
-        GpuUtil : Float
-        GpuMem : Float
-        GpuUtilTot : Float
-        GpuMemTot : Float
+        ReqGPUS : Mapped[Float]
+        Comment : Mapped[Text]
+        GpuEff : Mapped[Float]
+        NGpus : Mapped[Float]
+        GpuType : Mapped[String]
+        GpuUtil : Mapped[Float]
+        GpuMem : Mapped[Float]
+        GpuUtilTot : Mapped[Float]
+        GpuMemTot : Mapped[Float]
     pass
 
 steps_view = Table("steps", metadata,
@@ -380,41 +380,41 @@ steps_view = Table("steps", metadata,
 )
 class Eff:
     if TYPE_CHECKING:
-        JobID : String
-        User : String
-        Partition : String
-        JobName : String
-        SubmitLines : Text
-        Account : String
-        State : String
-        NodeList : String
-        Time : Integer
-        TimeLimit : Float
-        Start : Integer
-        End : Integer
-        NNodes : Integer
-        ReqTRES : Text
-        Elapsed : Float
-        NCPUS : Integer
-        CPUeff : Float
-        cpu_s_reserved : Float
-        cpu_s_used : Float
-        MemReq : Float
-        AllocMem : Float
-        TotalMem : Float
-        MaxRSS : Float
-        MemEff : Float
-        mem_s_reserved : Float
-        NGpus : Float
-        GPUType : String
-        gpu_s_reserved : Float
-        gpu_s_used : Float
-        GpuEff : Float
-        GpuMem : Float
-        MaxDiskRead : Integer
-        MaxDiskWrite : Integer
-        TotDiskRead : Float
-        TotDiskWrite : Float
+        JobID : Mapped[String]
+        User : Mapped[String]
+        Partition : Mapped[String]
+        JobName : Mapped[String]
+        SubmitLines : Mapped[Text]
+        Account : Mapped[String]
+        State : Mapped[String]
+        NodeList : Mapped[String]
+        Time : Mapped[Integer]
+        TimeLimit : Mapped[Float]
+        Start : Mapped[Integer]
+        End : Mapped[Integer]
+        NNodes : Mapped[Integer]
+        ReqTRES : Mapped[Text]
+        Elapsed : Mapped[Float]
+        NCPUS : Mapped[Integer]
+        CPUeff : Mapped[Float]
+        cpu_s_reserved : Mapped[Float]
+        cpu_s_used : Mapped[Float]
+        MemReq : Mapped[Float]
+        AllocMem : Mapped[Float]
+        TotalMem : Mapped[Float]
+        MaxRSS : Mapped[Float]
+        MemEff : Mapped[Float]
+        mem_s_reserved : Mapped[Float]
+        NGpus : Mapped[Float]
+        GPUType : Mapped[String]
+        gpu_s_reserved : Mapped[Float]
+        gpu_s_used : Mapped[Float]
+        GpuEff : Mapped[Float]
+        GpuMem : Mapped[Float]
+        MaxDiskRead : Mapped[Integer]
+        MaxDiskWrite : Mapped[Integer]
+        TotDiskRead : Mapped[Float]
+        TotDiskWrite : Mapped[Float]
     pass
 
 eff_view = Table("eff", metadata,
