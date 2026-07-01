@@ -14,9 +14,9 @@ import json
 import logging
 import os
 import re
-from sqlalchemy import create_engine, inspect, text, Engine
-from sqlalchemy.orm import sessionmaker, Session
-from slurm2sql.models import tables
+from sqlalchemy import column, create_engine, inspect, text, Engine, select, func, case, table
+from sqlalchemy.orm import sessionmaker, Session, aliased
+from slurm2sql.models import tables, Slurm, Allocation
 import subprocess
 import sys
 import time
@@ -907,63 +907,198 @@ def create_view(engine : Engine, name : str, view_spec : str):
             conn.execute(text(f'CREATE VIEW {name} AS {view_spec}'))
             conn.commit()            
 
-def create_views(connection):
-    create_view(connection, 'allocations', 'select * from slurm where "JobStep" is null')
-    create_view(connection, 'steps', 'select * from slurm where "JobStep" is not null')
-    create_view(connection, 'eff', 
-            'select '
-            'CASE '
-            'WHEN max(State) = \'PENDING\' THEN JobID '
-            'ELSE JobIDnostep '
-            'END AS JobID, '
-            'max(User) AS User, '
-            'max(Partition) AS Partition, '
-            '(SELECT s2.JobName FROM slurm AS s2 WHERE s2.JobIDnostep = slurm1.JobIDnostep AND s2.JobStep IS null LIMIT 1) AS JobName,'
-            'group_concat(SubmitLine, \'\n\') AS SubmitLines, '
-            'Account, '
-            '(SELECT State FROM allocations AS allocations2 WHERE allocations2.JobIDRawOnly=slurm1.JobIDRawOnly) AS State, '
-            'NodeList, '
-            'Time, '
-            'max(TimeLimit) AS TimeLimit, '
-            'min(Start) AS Start, '
-            'max(End) AS End, '
-            'CASE '
-            'WHEN max(State) = \'PENDING\' THEN max(ReqNodes) '
-            'ELSE max(NNodes) '
-            'END AS NNodes, '            
-            'ReqTRES, '
-            'max(Elapsed) AS Elapsed, '
-            'CASE '
-            'WHEN max(State) = \'PENDING\' THEN max(ReqCPUS) '
-            'ELSE max(NCPUS) '
-            'END AS NCPUS, '
-            'sum(totalcpu)/max(cputime) AS CPUeff, '
-            'max(cputime) AS cpu_s_reserved, '
-            'sum(totalcpu) AS cpu_s_used, '
-            'CASE '
-            'WHEN max(State) = \'PENDING\' THEN max(ReqMem) '
-            'ELSE max(ReqMemNode) '
-            'END AS MemReq, '            
-            'max(AllocMem) AS AllocMem, '
-            'max(TotalMem) AS TotalMem, '
-            'max(MaxRSS) AS MaxRSS, '
-            'max(MemEff) AS MemEff, '
-            'max(AllocMem*Elapsed) AS mem_s_reserved, '
-            'CASE '
-            'WHEN max(State) = \'PENDING\' THEN max(ReqGPUS) '
-            'ELSE max(NGpus) '
-            'END AS NGpus, '            
-            'max(GPUType) AS GPUType, '
-            'max(NGpus)*max(Elapsed) AS gpu_s_reserved, '
-            'max(NGpus)*max(Elapsed)*max(GpuUtil) AS gpu_s_used, '
-            'sum(GpuUtil*Elapsed)/max(Ngpus*Elapsed) AS GpuEff, '
-            'max(GpuMem) AS GpuMem, '
-            'MaxDiskRead, '
-            'MaxDiskWrite, '
-            'sum(TotDiskRead) as TotDiskRead, '
-            'sum(TotDiskWrite) as TotDiskWrite '
-            'FROM slurm AS slurm1 GROUP BY "JobIDnostep"'
+def submit_agg(engine):
+    if engine.dialect.name == "sqlite":
+        return func.group_concat(column("SubmitLine"), "\n")
+    else:
+        return func.string_agg(column("SubmitLine"), "\n")
+    
+def build_eff_statement(dialect_name: str):
+    """
+    Build eff view using ORM model.
+    Fully SQLite + PostgreSQL compatible.
+    """    
+    s = Slurm  # shorthand
+
+    # -----------------------------
+    # dialect-specific aggregation
+    # -----------------------------
+    if dialect_name == "sqlite":
+        submit_agg = func.group_concat(s.SubmitLine, "\n")
+    else:
+        submit_agg = func.string_agg(s.SubmitLine, "\n")
+
+    # -----------------------------
+    # reusable state logic
+    # -----------------------------
+    state_max = func.max(s.State)
+    pending = state_max == "PENDING"
+
+    # -----------------------------
+    # JobID logic
+    # -----------------------------
+    JobID = case(
+        (pending, func.max(s.JobID)),
+        else_=func.max(s.JobIDnostep),
+    ).label("JobID")
+
+    # -----------------------------
+    # basic aggregates
+    # -----------------------------
+    User = func.max(s.User).label("User")
+    Partition = func.max(s.Partition).label("Partition")
+    Account = func.max(s.Account).label("Account")
+
+    NodeList = func.max(s.NodeList).label("NodeList")
+    Time = func.max(s.Time).label("Time")
+    TimeLimit = func.max(s.Timelimit).label("TimeLimit")
+    Start = func.min(s.Start).label("Start")
+    End = func.max(s.End).label("End")
+
+    ReqTRES = func.max(s.ReqTRES).label("ReqTRES")
+    Elapsed = func.max(s.Elapsed).label("Elapsed")
+
+    AllocMem = func.max(s.AllocMem).label("AllocMem")
+    TotalMem = func.max(s.TotalMem).label("TotalMem")
+    MaxRSS = func.max(s.MaxRSS).label("MaxRSS")
+    MemEff = func.max(s.MemEff).label("MemEff")
+
+    GPUType = func.max(s.GpuType).label("GPUType")
+    GpuMem = func.max(s.GpuMem).label("GpuMem")
+
+    MaxDiskRead = func.max(s.MaxDiskRead).label("MaxDiskRead")
+    MaxDiskWrite = func.max(s.MaxDiskWrite).label("MaxDiskWrite")
+    TotDiskRead = func.sum(s.TotDiskRead).label("TotDiskRead")
+    TotDiskWrite = func.sum(s.TotDiskWrite).label("TotDiskWrite")
+
+    # -----------------------------
+    # conditional resource logic
+    # -----------------------------
+    NNodes = case(
+        (pending, func.max(s.ReqNodes)),
+        else_=func.max(s.NNodes),
+    ).label("NNodes")
+
+    NCPUS = case(
+        (pending, func.max(s.ReqCPUS)),
+        else_=func.max(s.NCPUS),
+    ).label("NCPUS")
+
+    MemReq = case(
+        (pending, func.max(s.ReqMem)),
+        else_=func.max(s.ReqMemNode),
+    ).label("MemReq")
+
+    NGpus = case(
+        (pending, func.max(s.ReqGPUS)),
+        else_=func.max(s.NGpus),
+    ).label("NGpus")
+
+    # -----------------------------
+    # derived metrics
+    # -----------------------------
+    CPUeff = (func.sum(s.TotalCPU) / func.max(s.CPUTime)).label("CPUeff")
+    cpu_reserved = func.max(s.CPUTime).label("cpu_s_reserved")
+    cpu_used = func.sum(s.TotalCPU).label("cpu_s_used")
+
+    mem_reserved = (func.max(s.AllocMem) * func.max(s.Elapsed)).label("mem_s_reserved")
+
+    gpu_reserved = (func.max(s.NGpus) * func.max(s.Elapsed)).label("gpu_s_reserved")
+
+    gpu_used = (
+        func.max(s.NGpus)
+        * func.max(s.Elapsed)
+        * func.max(s.GpuUtil)
+    ).label("gpu_s_used")
+
+    GpuEff = (
+        func.sum(s.GpuUtil * s.Elapsed)
+        / func.max(s.NGpus * s.Elapsed)
+    ).label("GpuEff")
+
+    # -----------------------------
+    # JobName subquery (FIXED aliasing issue)
+    # -----------------------------
+    s2 = aliased(Slurm)
+
+    JobName = (
+        select(s2.JobName)
+        .where(
+            s2.JobIDnostep == s.JobIDnostep,
+            s2.JobStep.is_(None),
         )
+        .limit(1)
+        .scalar_subquery()
+        .label("JobName")
+    )
+
+    # -----------------------------
+    # allocations subquery
+    # -----------------------------
+    a = aliased(Allocation)
+
+    State = (
+        select(a.State)
+        .where(a.JobIDRawOnly == s.JobIDRawOnly)
+        .limit(1)
+        .scalar_subquery()
+        .label("State")
+    )
+
+    # -----------------------------
+    # final statement
+    # -----------------------------
+    stmt = (
+        select(
+            JobID,
+            User,
+            Partition,
+            JobName,
+            submit_agg.label("SubmitLines"),
+            Account,
+            State,
+            NodeList,
+            Time,
+            TimeLimit,
+            Start,
+            End,
+            NNodes,
+            ReqTRES,
+            Elapsed,
+            NCPUS,
+            CPUeff,
+            cpu_reserved,
+            cpu_used,
+            MemReq,
+            AllocMem,
+            TotalMem,
+            MaxRSS,
+            MemEff,
+            mem_reserved,
+            NGpus,
+            GPUType,
+            gpu_reserved,
+            gpu_used,
+            GpuEff,
+            GpuMem,
+            MaxDiskRead,
+            MaxDiskWrite,
+            TotDiskRead,
+            TotDiskWrite,
+        )
+        .group_by(s.JobIDnostep)
+    )
+
+    return stmt
+def create_views(engine):
+    create_view(engine, 'allocations', 'select * from slurm where "JobStep" is null')
+    create_view(engine, 'steps', 'select * from slurm where "JobStep" is not null')
+    dialect = engine.dialect.name
+    stmt = build_eff_statement(dialect)
+    sql = f"CREATE VIEW eff AS {stmt.compile(engine, compile_kwargs={'literal_binds': True})}"
+    with engine.begin() as conn:
+        conn.execute(text(sql))
+        
 def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
     """Iterate through sacct, returning rows as dicts"""
     # Read data from sacct, or interpert sacct_filter directly as
