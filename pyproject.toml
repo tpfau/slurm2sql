@@ -5,6 +5,9 @@ build-backend = "flit_core.buildapi"
 [tool.flit.module]
 name = "slurm2sql"
 
+[tool.flit.sdist]
+include = ["slurm2sql/py.typed"]
+
 [project]
 name = "slurm2sql"
 authors = [{name = "Richard Darst"}]
