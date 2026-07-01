@@ -908,8 +908,8 @@ def create_view(engine : Engine, name : str, view_spec : str):
             conn.commit()            
 
 def create_views(connection):
-    create_view(connection, 'allocations', 'select * from slurm where slurm.JobStep is null')
-    create_view(connection, 'steps', 'select * from slurm where slurm.JobStep is not null')
+    create_view(connection, 'allocations', 'select * from slurm where "JobStep" is null')
+    create_view(connection, 'steps', 'select * from slurm where "JobStep" is not null')
     create_view(connection, 'eff', 
             'select '
             'CASE '
@@ -962,7 +962,7 @@ def create_views(connection):
             'MaxDiskWrite, '
             'sum(TotDiskRead) as TotDiskRead, '
             'sum(TotDiskWrite) as TotDiskWrite '
-            'FROM slurm AS slurm1 GROUP BY JobIDnostep'
+            'FROM slurm AS slurm1 GROUP BY "JobIDnostep"'
         )
 def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
     """Iterate through sacct, returning rows as dicts"""
