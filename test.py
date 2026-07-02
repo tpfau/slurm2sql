@@ -1,5 +1,6 @@
 
 # pylint: disable=redefined-outer-name
+import contextlib
 import csv
 import datetime
 import getpass
@@ -12,7 +13,7 @@ import time
 
 import pytest
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import OperationalError
 
@@ -40,7 +41,7 @@ def engine():
 def db(engine):
     """Test, in-memory database fixture"""
     session_factory =sessionmaker(bind=engine)    
-    with session_factory() as session:
+    with session_factory.begin() as session:
         yield session
 
 @pytest.fixture()
@@ -65,6 +66,14 @@ def slurm_version_2011(monkeypatch, slurm_version_number=(20, 11, 1)):
     print('Setting Slurm version to %s'%(slurm_version_number,))
     monkeypatch.setattr(slurm2sql, 'slurm_version', lambda: slurm_version_number)
     yield
+
+@contextlib.contextmanager
+def sql_session(engine):
+    """Context manager for a SQLAlchemy session"""
+    session_factory =sessionmaker(bind=engine)    
+    with session_factory.begin() as session:
+        yield session
+
 
 
 @pytest.fixture(scope='function')
@@ -100,122 +109,140 @@ def fetch(db, jobid, field, table='slurm'):
     selector = 'JobID'
     if table == 'eff':
         selector = 'JobID'
-    r = db.execute(text(f"SELECT {field} FROM {table} WHERE {selector}=:jobid"), {'jobid': jobid})
-    return r.fetchone()[0]
+    stmt = f'SELECT "{field}" FROM {table} WHERE {selector}=:jobid'    
+    r = db.execute(text(stmt), {'jobid': jobid})
+    res = r.fetchone()    
+    return res[0]
 
 #
 # Tests
 #
-def test_slurm2sql_basic(db, setup_db, data1):
-    slurm2sql.slurm2sql(db, sacct_filter=[], csv_input=data1)
-    r = db.execute(text("SELECT JobName, Start "
-                   "FROM slurm WHERE JobID=43974388;")).fetchone()
+def test_slurm2sql_basic(engine, setup_db, data1):
+    with sql_session(engine) as db:
+        slurm2sql.slurm2sql(db, sacct_filter=[], csv_input=data1)
+    with sql_session(engine) as db:
+        r = db.execute(text("SELECT JobName, Start "
+                   "FROM slurm WHERE JobID=43974388;")).fetchone()    
     assert r[0] == 'spawner-jupyterhub'
     assert r[1] == 1564601354
 
-def test_csv(db, data3, setup_db):
-    slurm2sql.slurm2sql(db, sacct_filter=[], csv_input=data3)
-    r = db.execute(text("SELECT JobName, Start "
+def test_csv(engine, data3, setup_db):
+    with sql_session(engine) as db:
+        slurm2sql.slurm2sql(db, sacct_filter=[], csv_input=data3)
+    with sql_session(engine) as db:
+        r = db.execute(text("SELECT JobName, Start "
                    "FROM slurm WHERE JobID=1;")).fetchone()
     print(r)
     assert r[0] == 'job1'
     assert r[1] == 3600
 
-def test_main(db, engine, data1):
-    slurm2sql.main(['dummy'], csv_input=data1, db=(engine, db))
-    r = db.execute(text("SELECT JobName, Start "
+def test_main(engine, data1):    
+    slurm2sql.main(['dummy'], csv_input=data1, db=engine)
+    with sql_session(engine) as db:
+        r = db.execute(text("SELECT JobName, Start "
                    "FROM slurm WHERE JobID=43974388;")).fetchone()
     assert r[0] == 'spawner-jupyterhub'
     assert r[1] == 1564601354
-    assert db.execute(text("SELECT count(*) from slurm;")).fetchone()[0] == 5
+    with sql_session(engine) as db:
+        assert db.execute(text("SELECT count(*) from slurm;")).fetchone()[0] == 5
 
-def test_jobs_only(db, engine,data1):
+def test_jobs_only(engine,data1):
     """--jobs-only gives two rows"""
-    slurm2sql.main(['dummy', '--jobs-only'], csv_input=data1, db=(engine, db))
-    assert db.execute(text("SELECT count(*) from slurm;")).fetchone()[0] == 2
+    
+    slurm2sql.main(['dummy', '--jobs-only'], csv_input=data1, db=engine)    
+    with sql_session(engine) as db:
+        assert db.execute(text("SELECT count(*) from slurm;")).fetchone()[0] == 2
 
 def test_verbose(db, engine, data1, caplog):
-    slurm2sql.main(['dummy', '--history-days=1', '-v'], csv_input=data1, db=(engine,db))
+    slurm2sql.main(['dummy', '--history-days=1', '-v'], csv_input=data1, db=engine)
     assert time.strftime("%Y-%m-%d") in caplog.text
 
 def test_quiet(db, engine, data1, caplog, capfd):
-    slurm2sql.main(['dummy', '-q'], csv_input=data1, db=(engine,db))
-    slurm2sql.main(['dummy', '--history=1-5', '-q'], csv_input=data1, db=(engine,db))
-    slurm2sql.main(['dummy', '--history-days=1', '-q'], csv_input=data1, db=(engine,db))
-    slurm2sql.main(['dummy', '--history-start=2019-01-01', '-q'], csv_input=data1, db=(engine,db))
+    slurm2sql.main(['dummy', '-q'], csv_input=data1, db=engine)
+    slurm2sql.main(['dummy', '--history=1-5', '-q'], csv_input=data1, db=engine)
+    slurm2sql.main(['dummy', '--history-days=1', '-q'], csv_input=data1, db=engine)
+    slurm2sql.main(['dummy', '--history-start=2019-01-01', '-q'], csv_input=data1, db=engine)
     #assert caplog.text == ""
     captured = capfd.readouterr()
     print(captured)
     assert captured.out == ""
     assert captured.err == ""
 
-def test_time(db, engine, data1):
-    slurm2sql.main(['dummy'], csv_input=data1, db=(engine,db))
-    r = db.execute(text("SELECT Time FROM slurm WHERE JobID=43974388;")).fetchone()[0]
-    assert r == unixtime('2019-08-01T02:02:39')
-    # Submit defined, Start defined, End='Unknown' --> timestamp should be "now"
-    r = db.execute(text("SELECT Time FROM slurm WHERE JobID=43977780;")).fetchone()[0]
-    assert r >= time.time() - 5
-    # Job step: Submit defined, Start='Unknown', End='Unknown' --> Time should equal Submit
-    r = db.execute(text("SELECT Time FROM slurm WHERE JobID='43977780.batch';")).fetchone()[0]
-    assert r == unixtime('2019-08-01T00:35:27')
+def test_time(engine, data1):
+    slurm2sql.main(['dummy'], csv_input=data1, db=engine)
+    with sql_session(engine) as db:
+        r = db.execute(text("SELECT Time FROM slurm WHERE JobID=43974388;")).fetchone()[0]
+        assert r == unixtime('2019-08-01T02:02:39')
+        # Submit defined, Start defined, End='Unknown' --> timestamp should be "now"
+        r = db.execute(text("SELECT Time FROM slurm WHERE JobID=43977780;")).fetchone()[0]
+        assert r >= time.time() - 5    
+        # Job step: Submit defined, Start='Unknown', End='Unknown' --> Time should equal Submit
+        r = db.execute(text("SELECT Time FROM slurm WHERE JobID='43977780.batch';")).fetchone()[0]
+        assert r == unixtime('2019-08-01T00:35:27')
 
-def test_queuetime(db, engine, data1):
-    slurm2sql.main(['dummy'], csv_input=data1, db=(engine,db))
-    r = db.execute(text("SELECT QueueTime FROM slurm WHERE JobID=43974388;")).fetchone()[0]
+def test_queuetime(engine, data1):
+    slurm2sql.main(['dummy'], csv_input=data1, db=engine)
+    with sql_session(engine) as db:
+        r = db.execute(text("SELECT QueueTime FROM slurm WHERE JobID=43974388;")).fetchone()[0]
     assert r == 1
 
 #
 # Test different fields
 #
-def test_cpueff(db, setup_db):
+def test_cpueff(engine, setup_db):
     data = """
     JobID, CPUTime, TotalCPU, TRESUsageInTot
     1,     50:00,   25:00,    cpu=00:25:00
     """
-    slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))        
-    print(db.execute(text('select * from eff;')).fetchall())
-    print(db.execute(text('select * from slurm;')).fetchall())
-    assert fetch(db, 1, 'CPUTime') == 3000
-    assert fetch(db, 1, 'TotalCPU') == 1500
-    assert fetch(db, 1, 'CPUeff', table='eff') == 0.5
+    with sql_session(engine) as db:
+        slurm2sql.slurm2sql(db, [], csv_input=csvdata(data)) 
+    with sql_session(engine) as db:
+        assert fetch(db, "1", 'CPUTime') == 3000
+        assert fetch(db, "1", 'TotalCPU') == 1500
+        assert fetch(db, "1", 'CPUeff', table='eff') == 0.5
 
-def test_cpueff_steps(db, setup_db):
+def test_cpueff_steps(engine, setup_db):
     data = """
     JobID,CPUTime,TotalCPU,TRESUsageInTot
     1,   50:00, 02:00,
     1.1, 25:00, 24:00, cpu=00:25:00
     1.2, 25:00, 24:00, cpu=00:25:00
     """
-    slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))
-    print(db.execute(text('select * from eff;')).fetchall())
-    #assert fetch(db, 1, 'CPUTime') == 3000
-    #assert fetch(db, 1, 'TotalCPU') == 1500
-    assert fetch(db, 1, 'CPUeff', table='eff') == 1.0
-    assert fetch(db, 1, 'cpu_s_reserved', table='eff') == 3000
-    assert fetch(db, 1, 'cpu_s_used', table='eff') == 3000
+    with sql_session(engine) as db:
+        slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))
+    with sql_session(engine) as db:
+        print(db.execute(text('select * from eff;')).fetchall())
+        #assert fetch(db, 1, 'CPUTime') == 3000
+        #assert fetch(db, 1, 'TotalCPU') == 1500
+        assert fetch(db, "1", 'CPUeff', table='eff') == 1.0
+        assert fetch(db, "1", 'cpu_s_reserved', table='eff') == 3000
+    assert fetch(db, "1", 'cpu_s_used', table='eff') == 3000
 
 
-def test_memeff(db, setup_db):
+def test_memeff(engine, setup_db):
     data = """
     JobID,AllocTRES,TRESUsageInTot
     1,mem=1000K,mem=500K
     2,mem=0K,mem=0K
     """
-    slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))
-    print(db.execute(text('select * from eff;')).fetchall())
-    assert fetch(db, 1, 'Memeff', table='eff') == 0.5
-    assert fetch(db, 2, 'Memeff', table='eff') == None
+    with sql_session(engine) as db:
+        slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))
+    with sql_session(engine) as db:
+        print(db.execute(text('select * from eff;')).fetchall())
+        assert fetch(db, "1", 'Memeff', table='eff') == 0.5
+        assert fetch(db, "2", 'Memeff', table='eff') == None
 
 
-def test_gpueff(db, setup_db):
+def test_gpueff(engine, setup_db):
     data = """
     JobID,Elapsed,AllocTRES,  TRESUsageInTot
     1,    1:00,   gres/gpu=1, gres/gpuutil=23
     """
-    slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))
-    print(db.execute(text('select * from eff;')).fetchall())
-    assert fetch(db, 1, 'GpuEff', table='eff') == 0.23
+    with sql_session(engine) as db:
+        slurm2sql.slurm2sql(db, [], csv_input=csvdata(data))
+    with sql_session(engine) as db:
+        print(db.execute(text('select * from eff;')).fetchall())
+        assert fetch(db, "1", 'GpuEff', table='eff') == 0.23
 
 
 #
@@ -353,25 +380,28 @@ def test_history_last_timestamp(db, slurm_version, setup_db):
     slurm2sql.update_last_timestamp(db, 13)
     assert slurm2sql.get_last_timestamp(db) == 13
 
-def test_history_resume_basic(db, engine, data1, setup_db):
+def test_history_resume_basic(engine, data1, setup_db):
     """Test --history-resume"""
     # Run it once.  Is the update_time approximately now?
-    slurm2sql.main(['dummy', '--history-days=1'], csv_input=data1, db=(engine,db))
-    update_time = slurm2sql.get_last_timestamp(db)
-    assert abs(update_time - time.time()) < 5
-    # Wait 1s, is update time different?
-    time.sleep(1.1)
-    slurm2sql.main(['dummy', '--history-resume'], csv_input=data1, db=(engine,db))
-    assert update_time != slurm2sql.get_last_timestamp(db)
+    slurm2sql.main(['dummy', '--history-days=1'], csv_input=data1, db=(engine))
+    with sql_session(engine) as db:
+        update_time = slurm2sql.get_last_timestamp(db)
+        assert abs(update_time - time.time()) < 5
+        # Wait 1s, is update time different?
+        time.sleep(1.1)
+    slurm2sql.main(['dummy', '--history-resume'], csv_input=data1, db=engine)
+    with sql_session(engine) as db:
+        assert update_time != slurm2sql.get_last_timestamp(db)
 
-def test_history_resume_timestamp(db, engine, data1, setup_db, caplog):
+def test_history_resume_timestamp(engine, data1, setup_db, caplog):
     """Test --history-resume's exact timestamp"""
     # Run once to get an update_time
-    slurm2sql.main(['dummy', '--history-days=1'], csv_input=data1, db=(engine,db))
-    update_time = slurm2sql.get_last_timestamp(db)
+    slurm2sql.main(['dummy', '--history-days=1'], csv_input=data1, db=engine)
+    with sql_session(engine) as db:
+        update_time = slurm2sql.get_last_timestamp(db)
     caplog.clear()
     # Run again and make sure that we filter based on that update_time
-    slurm2sql.main(['dummy', '--history-resume'], csv_input=data1, db=(engine,db))
+    slurm2sql.main(['dummy', '--history-resume'], csv_input=data1, db=engine)    
     assert slurm2sql.slurm_timestamp(update_time) in caplog.text
 
 @pytest.mark.parametrize(
@@ -388,14 +418,16 @@ def test_slurm_version(string, version):
 
 # Test slurm 20.11 version
 #@pytest.mark.parametrize('slurm_version_number', [(20, 12, 5)])
-def test_slurm2011_gres(db, setup_db, data2):
+def test_slurm2011_gres(engine, setup_db, data2):
     """Test 20.11 compatibility, using ReqTRES instead of ReqGRES.
 
     This asserts that the ReqGRES column is *not* in the database with Slurm > 20.11
     """
-    test_slurm2sql_basic(db, None, data2)
-    with pytest.raises(OperationalError, match='no such column:'):
-        db.execute(text('SELECT ReqGRES FROM slurm;'))
+    
+    test_slurm2sql_basic(engine, None, data2)
+    with sql_session(engine) as db:
+        with pytest.raises(OperationalError, match='no such column:'):
+            db.execute(text('SELECT ReqGRES FROM slurm;'))
 
 
 
@@ -429,7 +461,7 @@ def test_jobids(text, jobidonly, arraytaskid, jobstep, jobid):
 
 @pytest.mark.parametrize("text, jobidrawonly", jobidraw_test_data)
 def test_jobidraws(text, jobidrawonly):
-    assert slurm2sql.slurmJobIDrawonly.calc({'JobIDRaw': text}) == jobidrawonly
+    assert slurm2sql.slurmJobIDRawOnly.calc({'JobIDRaw': text}) == jobidrawonly
 
 
 

@@ -6,6 +6,7 @@
 """
 
 from __future__ import division, print_function
+import contextlib
 from typing import Optional, Type, Any, TypeVar
 
 import argparse
@@ -711,10 +712,14 @@ def get_db_from_args(args):
     else:
         connection_string = 'sqlite:///:memory:'
     engine = create_engine(connection_string)
-        
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    return (engine, session)
+    return engine
+
+@contextlib.contextmanager
+def sql_session(engine):
+    """Context manager for a SQLAlchemy session"""
+    session_factory =sessionmaker(bind=engine)    
+    with session_factory.begin() as session:
+        yield session
 
 def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
     """Parse arguments and use the other API"""
@@ -772,10 +777,10 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
             os.unlink(args.db)
             
         # Create SQLAlchemy engine                
-        engine, session = get_db_from_args(args)        
+        engine = get_db_from_args(args)        
         
-        db = (engine, session)
-    engine, session = db
+        db = engine
+    engine = db
     # Ensure that everything exists in main
     set_up_db(engine)        
     # If --history-days, get just this many days history
@@ -783,8 +788,9 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
         or args.history_resume
         or args.history_resume_or_start is not None
         or args.history_days is not None
-        or args.history_start is not None):        
-        errors = get_history(session, sacct_filter=sacct_filter,
+        or args.history_start is not None): 
+        with sql_session(engine) as session:       
+            errors = get_history(session, sacct_filter=sacct_filter,
                             history=args.history,
                             history_resume=args.history_resume,
                             history_resume_or_start=args.history_resume_or_start,
@@ -795,18 +801,18 @@ def main(argv=sys.argv[1:], db=None, raw_sacct=None, csv_input=None):
                             raw_sacct=raw_sacct,
                             # --history real usage doesn't make sense with csv
                             # (below is just for running tests)
-                            csv_input=csv_input)
-
-        create_indexes(session)
+                            csv_input=csv_input)        
+            create_indexes(session)
     # Normal operation
-    else:        
-        errors = slurm2sql(session, sacct_filter=sacct_filter,
-                           update=args.update,
-                           jobs_only=args.jobs_only,
-                           raw_sacct=raw_sacct,
-                           verbose=args.verbose,
-                           csv_input=args.csv_input or csv_input)
-        create_indexes(session)
+    else:    
+        with sql_session(engine) as session:
+            errors = slurm2sql(session, sacct_filter=sacct_filter,
+                               update=args.update,
+                               jobs_only=args.jobs_only,
+                               raw_sacct=raw_sacct,
+                               verbose=args.verbose,
+                               csv_input=args.csv_input or csv_input)
+            create_indexes(session)
 
     if errors:
         LOG.warning("Completed with %s errors", errors)
@@ -868,8 +874,7 @@ def get_history(session, sacct_filter=['-a'],
         LOG.debug(new_filter)
         LOG.info("%s %s", days_ago, start.date() if history_days is not None else start)
         errors += slurm2sql(session, sacct_filter=new_filter, update=True, jobs_only=jobs_only,
-                            raw_sacct=raw_sacct, csv_input=csv_input)
-        session.commit()
+                            raw_sacct=raw_sacct, csv_input=csv_input)        
         update_last_timestamp(session, update_time=end_actual)
         start = end
         days_ago -= day_interval
@@ -891,12 +896,12 @@ def sacct(slurm_cols, sacct_filter):
 
 
 def create_indexes(connection: Session):    
-    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidnostep ON slurm (JobIDnostep)'))
-    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_start ON slurm (Start)'))
-    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_start ON slurm (User, Start)'))
-    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm (Time)'))
-    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm (User, Time)'))
-    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidrawonly ON slurm (JobIDRawOnly)'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidnostep ON slurm ("JobIDnostep")'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_start ON slurm ("Start")'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_start ON slurm ("User", "Start")'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm ("Time")'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm ("User", "Time")'))
+    connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidrawonly ON slurm ("JobIDRawOnly")'))
     connection.execute(text('ANALYZE'))            
     
 def build_eff_statement(dialect_name: str):
@@ -1088,8 +1093,7 @@ def create_view(engine : Engine, name : str, view_spec : str | SQLCompiler):
     inspector = inspect(engine)
     if name not in inspector.get_view_names():
         with engine.begin() as conn:
-            conn.execute(text(f'CREATE VIEW {name} AS {view_spec}'))
-            conn.commit()
+            conn.execute(text(f'CREATE VIEW {name} AS {view_spec}'))            
 
 def create_views(engine):
     create_view(engine, 'allocations', 'select * from slurm where "JobStep" is null')
@@ -1215,15 +1219,8 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
                 session.add(tables.Slurm(**processed_row))
         else:
             session.add(tables.Slurm(**processed_row))
-
-        # Committing every so often allows other queries to succeed
-        if i%10000 == 0:            
-            session.commit()
-            if verbose:
-                print('... processing row %d'%i)
-    # Now, also parse the Squeue for everything that is running or pending, and update the 
-    # Database with the latest information    
-    session.commit()
+    # We need to flush, so we can update properly. 
+    session.flush()
     # And finally do a SQUEUE to update the pending jobs with the latest information
     if csv_input is None and raw_sacct is None:
         # Update database from SQUEUE
@@ -1232,10 +1229,9 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
         # Put all updates in the transaction.
         for job_id in queue_ids:
             session.query(tables.Slurm).filter_by(JobID=job_id).update(squeue.get_update(job_id))
-        # And now commit.
-        session.commit()
+        
     else:
-        print(f"Skipping SQUEUE update since we are using CSV {csv_input is not None} or raw sacct input {raw_sacct is not None}")
+        LOG.info(f"Skipping SQUEUE update since we are using CSV {csv_input is not None} or raw sacct input {raw_sacct is not None}")
     return errors[0]
 
 
@@ -1291,21 +1287,20 @@ def import_or_open_db(args, sacct_filter, csv_input=None):
 
     """
     if args.db:
-        engine, session = get_db_from_args(args)        
+        engine = get_db_from_args(args)        
         if sacct_filter:
             LOG.warn("Warning: reading from database.  Any sacct filters are ignored.")
-        return engine, session
+        return engine
     else:
         # Import fresh into in-memory engine
         sacct_filter = args_to_sacct_filter(args, sacct_filter)
         LOG.debug(f'sacct args: {sacct_filter}')
-        engine = create_engine('sqlite:///:memory:')
-        Session = sessionmaker(bind=engine)
-        session = Session()
+        engine = create_engine('sqlite:///:memory:')        
         set_up_db(engine)
-        slurm2sql(session, sacct_filter=sacct_filter,
-                 csv_input=getattr(args, 'csv_input', False) or csv_input)
-        return engine, session
+        with sql_session(engine) as session:
+            slurm2sql(session, sacct_filter=sacct_filter,
+                    csv_input=getattr(args, 'csv_input', False) or csv_input)
+        return engine
 
 
 def update_last_timestamp(session, update_time=None):
@@ -1325,8 +1320,7 @@ def update_last_timestamp(session, update_time=None):
         obj.update_time = update_time
     else:
         obj = tables.MetaSlurmLastUpdate(id=0, update_time=update_time)
-        session.add(obj)
-    session.commit()
+        session.add(obj)    
 
 def get_last_timestamp(session):
     """Return the last update timestamp from the database"""
@@ -1421,14 +1415,14 @@ def sacct_cli(argv=sys.argv[1:], csv_input=None):
     if args.output == 'long':
         args.output = SACCT_DEFAULT_FIELDS_LONG
 
-    engine, _ = import_or_open_db(args, sacct_filter, csv_input=csv_input)
+    engine = import_or_open_db(args, sacct_filter, csv_input=csv_input)
 
     # If we run sacct, then args.user is set to None so we don't do double filtering here
     where = args_to_sql_where(args)
 
     from tabulate import tabulate
-    sql = f'select {args.output} from slurm WHERE true {where}'
-    with engine.connect() as conn:
+    sql = f'select {args.output} from slurm WHERE true {where}'    
+    with sql_session(engine) as conn:
         res = conn.execute(text(sql), {'user': args.user, 'partition': args.partition})
         headers = res.keys()
         data = res.fetchall()
@@ -1505,7 +1499,7 @@ def seff_cli(argv=sys.argv[1:], csv_input=None):
     if args.long:
         long_output = "strftime('%m-%d_%H:%M', Start, 'unixepoch') AS Start, strftime('%m-%d_%H:%M', End, 'unixepoch') AS End,"
 
-    engine, _ = import_or_open_db(args, sacct_filter, csv_input=csv_input)
+    engine= import_or_open_db(args, sacct_filter, csv_input=csv_input)
 
     # If we run sacct, then args.user is set to None so we don't do double filtering here
     where = args_to_sql_where(args)
@@ -1537,7 +1531,7 @@ def seff_cli(argv=sys.argv[1:], csv_input=None):
                                 WHERE End IS NOT NULL {where}
                             GROUP BY user ) {order_by}
                             """
-        with engine.connect() as conn:
+        with sql_session(engine) as conn:
             cur = conn.execute(text(sql), {'user': args.user, 'partition': args.partition})
             headers = cur.keys()
             data = cur.fetchall()
@@ -1574,7 +1568,7 @@ def seff_cli(argv=sys.argv[1:], csv_input=None):
 
                          FROM eff
                          WHERE Start IS NOT NULL and End IS NOT NULL {where} ) {order_by}"""
-    with engine.connect() as conn:
+    with sql_session(engine) as conn:
         cur = conn.execute(text(sql), {'user': args.user, 'partition': args.partition})
         headers = cur.keys()
         data = cur.fetchall()
