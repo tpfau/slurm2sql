@@ -10,7 +10,7 @@ class Slurm(Base):
     # Basic identifiers
     id = Column(Integer, primary_key=True, autoincrement=True)
     JobID = Column(String, unique=True, index=True)
-    JobIDnostep = Column(Integer, index=True)
+    JobIDnostep = Column(String, index=True)
     JobIDonly = Column(Integer)
     JobStep = Column(String)
     ArrayTaskID = Column(Integer)
