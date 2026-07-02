@@ -1,6 +1,6 @@
 
 from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, Integer, Float, String, Text, engine, Table, MetaData
+from sqlalchemy import Column, Integer, Float, String, BigInteger, Text, engine, Table, MetaData
 
 
 Base = declarative_base()
@@ -11,7 +11,7 @@ class Slurm(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     JobID = Column(String, unique=True, index=True)
     JobIDnostep = Column(String, index=True)
-    JobIDonly = Column(Integer)
+    JobIDonly = Column(BigInteger)
     JobStep = Column(String)
     ArrayTaskID = Column(Integer)
     JobIDRawOnly = Column(Integer)
@@ -77,14 +77,14 @@ class Slurm(Base):
     MaxRSS = Column(Float)
     MaxRSSNode = Column(String)
     MaxRSSTask = Column(String)
-    MaxPages = Column(Integer)
+    MaxPages = Column(BigInteger)
     MaxVMSize = Column(Float)
 
     # Disk
-    AveDiskRead = Column(Integer)
-    AveDiskWrite = Column(Integer)
-    MaxDiskRead = Column(Integer)
-    MaxDiskWrite = Column(Integer)
+    AveDiskRead = Column(BigInteger)
+    AveDiskWrite = Column(BigInteger)
+    MaxDiskRead = Column(BigInteger)
+    MaxDiskWrite = Column(BigInteger)
     TotDiskRead = Column(Float)
     TotDiskWrite = Column(Float)
 
