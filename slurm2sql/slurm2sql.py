@@ -16,6 +16,7 @@ import os
 import re
 from sqlalchemy import String, column, create_engine, inspect, text, Engine, select, func, case, table
 from sqlalchemy.orm import sessionmaker, Session, aliased
+from sqlalchemy.sql.compiler import SQLCompiler
 from slurm2sql.models import tables, Slurm, Allocation
 import subprocess
 import sys
@@ -896,16 +897,7 @@ def create_indexes(connection: Session):
     connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_time ON slurm (Time)'))
     connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_user_time ON slurm (User, Time)'))
     connection.execute(text('CREATE INDEX IF NOT EXISTS idx_slurm_jobidrawonly ON slurm (JobIDRawOnly)'))
-    connection.execute(text('ANALYZE'))
-
-
-def create_view(engine : Engine, name : str, view_spec : str):
-    """Create a view in the database"""
-    inspector = inspect(engine)
-    if name not in inspector.get_view_names():
-        with engine.begin() as conn:
-            conn.execute(text(f'CREATE VIEW {name} AS {view_spec}'))
-            conn.commit()            
+    connection.execute(text('ANALYZE'))            
     
 def build_eff_statement(dialect_name: str):
     """
@@ -1090,14 +1082,21 @@ def build_eff_statement(dialect_name: str):
     )
 
     return stmt
+
+def create_view(engine : Engine, name : str, view_spec : str | SQLCompiler):
+    """Create a view in the database"""
+    inspector = inspect(engine)
+    if name not in inspector.get_view_names():
+        with engine.begin() as conn:
+            conn.execute(text(f'CREATE VIEW {name} AS {view_spec}'))
+            conn.commit()
+
 def create_views(engine):
     create_view(engine, 'allocations', 'select * from slurm where "JobStep" is null')
     create_view(engine, 'steps', 'select * from slurm where "JobStep" is not null')
     dialect = engine.dialect.name
     stmt = build_eff_statement(dialect)
-    sql = f"CREATE VIEW eff AS {stmt.compile(engine, compile_kwargs={'literal_binds': True})}"
-    with engine.begin() as conn:
-        conn.execute(text(sql))
+    create_view(engine, 'eff', stmt.compile(engine, compile_kwargs={'literal_binds': True}))
         
 def sacct_iter(slurm_cols, sacct_filter, errors=[0], raw_sacct=None):
     """Iterate through sacct, returning rows as dicts"""
