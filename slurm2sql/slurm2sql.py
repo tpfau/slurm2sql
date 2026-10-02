@@ -1193,7 +1193,7 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
         rows = rows()  # activate the generator
     else:
         rows = sacct_iter(slurm_cols, sacct_filter, raw_sacct=raw_sacct, errors=errors)
-
+    ingested_ids = set()
     for i, row in enumerate(rows):
 
         # If --jobs-only, then skip all job steps (sacct updates the
@@ -1210,7 +1210,11 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
 
         # Upsert by JobID if update requested, else insert
         JobID = processed_row.get('JobID')
-        if update and JobID:
+        if JobID in ingested_ids:
+            # We do not handle the same job twice coming from the same accounting data, this is a bug in the underlying database and we just take the first instance.
+            continue
+        ingested_ids.add(JobID)
+        if update and JobID:                        
             existing = session.query(tables.Slurm).filter_by(JobID=JobID).first()
             if existing:
                 for kk, vv in processed_row.items():
