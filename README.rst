@@ -84,6 +84,24 @@ days ago and then keep a database updated each time it runs::
 
   slurm2sql.py --history-resume-or-start=7-0 recent.sqlite3 -- -a
 
+PostgreSQL ingestion
+~~~~~~~~~~~~~~~~~~~~
+
+PostgreSQL destinations use multi-row inserts, or ``ON CONFLICT ("JobID")
+DO UPDATE`` when updating existing data.  The destination must have a
+unique index or constraint on ``JobID``.  Identical imported values do not
+rewrite an existing row; changed values, including nulls, replace the
+previous imported values.  The existing row's primary key is preserved.
+
+The Python ``slurm2sql()`` function accepts ``batch_size=250`` to control
+rows per statement.  Larger requested batches are capped to stay below
+30,000 bound parameters.  Duplicate JobIDs within one input retain their
+first occurrence, including duplicates across batches.
+
+Batches do not commit: the caller controls the transaction.  The command
+line history workflow still commits after the entire history import.
+Non-PostgreSQL destinations retain the existing ingestion path.
+
 
 ``slurm2sql-sacct``
 ~~~~~~~~~~~~~~~~~~~

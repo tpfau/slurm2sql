@@ -16,6 +16,8 @@ import logging
 import os
 import re
 from sqlalchemy import String, column, create_engine, inspect, text, Engine, select, func, case, table
+from sqlalchemy import or_
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.orm import sessionmaker, Session, aliased
 from sqlalchemy.sql.compiler import SQLCompiler
 from slurm2sql.models import tables, Slurm, Allocation
@@ -1153,8 +1155,8 @@ def set_up_db(engine):
 
 def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=False,
               raw_sacct=None, verbose=False,
-              csv_input=None):
-    """Import one call of sacct to a sqlite database.
+              csv_input=None, batch_size=250):
+    """Import one call of sacct to a database.
 
     db:
     open sqlite3 database file object.
@@ -1168,8 +1170,13 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
     raw_sacct: If given, do not run sacct but use this as the input
     (file-like object)
 
+    batch_size: Maximum rows per PostgreSQL insert/upsert statement.
+    The caller retains control of the transaction and commits.
+
     Returns: the number of errors
     """
+    if batch_size <= 0:
+        raise ValueError('batch_size must be positive')
     columns = COLUMNS.copy()
 
     def infer_type(cd):
@@ -1193,6 +1200,24 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
         rows = rows()  # activate the generator
     else:
         rows = sacct_iter(slurm_cols, sacct_filter, raw_sacct=raw_sacct, errors=errors)
+    postgres = session.get_bind().dialect.name == 'postgresql'
+    pending_rows: list[dict[str, Any]] = []
+
+    def write_batch():
+        statement = postgresql_insert(tables.Slurm.__table__).values(pending_rows)
+        if update:
+            updates = {name: statement.excluded[name]
+                       for name in pending_rows[0] if name != 'JobID'}
+            statement = statement.on_conflict_do_update(
+                index_elements=[tables.Slurm.JobID],
+                set_=updates,
+                where=or_(*(tables.Slurm.__table__.c[name].is_distinct_from(value)
+                            for name, value in updates.items())))
+        session.execute(statement)
+        pending_rows.clear()
+
+    if postgres:
+        session.flush()
     ingested_ids = set()
     for i, row in enumerate(rows):
 
@@ -1214,7 +1239,12 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
             # We do not handle the same job twice coming from the same accounting data, this is a bug in the underlying database and we just take the first instance.
             continue
         ingested_ids.add(JobID)
-        if update and JobID:                        
+        if postgres:
+            pending_rows.append(processed_row)
+            row_limit = min(batch_size, max(1, 30000 // len(processed_row)))
+            if len(pending_rows) >= row_limit:
+                write_batch()
+        elif update and JobID:
             existing = session.query(tables.Slurm).filter_by(JobID=JobID).first()
             if existing:
                 for kk, vv in processed_row.items():
@@ -1223,8 +1253,12 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
                 session.add(tables.Slurm(**processed_row))
         else:
             session.add(tables.Slurm(**processed_row))
+    if pending_rows:
+        write_batch()
     # We need to flush, so we can update properly. 
     session.flush()
+    if postgres:
+        session.expire_all()
     # And finally do a SQUEUE to update the pending jobs with the latest information
     if csv_input is None and raw_sacct is None:
         # Update database from SQUEUE

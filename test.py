@@ -10,10 +10,12 @@ import sqlite3
 import sys
 import tempfile
 import time
+from unittest.mock import Mock
 
 import pytest
 
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, create_mock_engine, text, inspect
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import OperationalError
 
@@ -135,6 +137,46 @@ def test_csv(engine, data3, setup_db):
     print(r)
     assert r[0] == 'job1'
     assert r[1] == 3600
+
+
+
+@pytest.mark.parametrize('update', [False, True])
+def test_postgresql_ingestion_batches(update):
+    session = Mock(spec=Session)
+    session.get_bind.return_value = create_mock_engine('postgresql://', lambda *args: None)
+    data = 'JobID,JobName\n' + ''.join(f'{job_id},job{job_id}\n' for job_id in range(5))
+    data += '0,duplicate\n'
+    assert slurm2sql.slurm2sql(session, update=update, csv_input=csvdata(data), batch_size=2) == 0
+    assert session.execute.call_count == 3
+    assert session.flush.call_count == 2
+    session.query.assert_not_called()
+    session.add.assert_not_called()
+    session.commit.assert_not_called()
+    session.expire_all.assert_called_once_with()
+    job_ids = []
+    for call in session.execute.call_args_list:
+        compiled = call.args[0].compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+        assert ('ON CONFLICT ("JobID") DO UPDATE' in sql) == update
+        assert ('IS DISTINCT FROM' in sql) == update
+        assert 'duplicate' not in compiled.params.values()
+        job_ids.extend(value for name, value in compiled.params.items() if name.startswith('JobID_m'))
+    assert job_ids == ['0', '1', '2', '3', '4']
+
+def test_slurm2sql_update(engine, setup_db):
+    with sql_session(engine) as db:
+        slurm2sql.slurm2sql(db, csv_input=csvdata('JobID,JobName\n1,old'))
+        original_id = db.execute(text('SELECT id FROM slurm WHERE "JobID" = \'1\'')).scalar()
+        slurm2sql.slurm2sql(db, update=True,
+                          csv_input=csvdata('JobID,JobName\n1,new\n2,other\n1,duplicate'))
+        assert fetch(db, '1', 'JobName') == 'new'
+        assert fetch(db, '2', 'JobName') == 'other'
+        assert db.execute(text('SELECT id FROM slurm WHERE "JobID" = \'1\'')).scalar() == original_id
+        assert db.execute(text('SELECT count(*) FROM slurm')).scalar() == 2
+
+def test_slurm2sql_batch_size():
+    with pytest.raises(ValueError, match='batch_size must be positive'):
+        slurm2sql.slurm2sql(Mock(spec=Session), batch_size=0)
 
 def test_main(engine, data1):    
     slurm2sql.main(['dummy'], csv_input=data1, db=engine)
