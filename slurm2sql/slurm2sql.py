@@ -864,7 +864,7 @@ def get_history(session, sacct_filter=['-a'],
         stop = now + datetime.timedelta(seconds=6*3600)
 
     days_ago = (now - start).days
-    day_interval = 1
+    day_interval = 1        
     while start <= stop:
         end = start+datetime.timedelta(days=day_interval)
         end = end.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -876,8 +876,13 @@ def get_history(session, sacct_filter=['-a'],
         LOG.debug(new_filter)
         LOG.info("%s %s", days_ago, start.date() if history_days is not None else start)
         errors += slurm2sql(session, sacct_filter=new_filter, update=True, jobs_only=jobs_only,
-                            raw_sacct=raw_sacct, csv_input=csv_input)        
-        update_last_timestamp(session, update_time=end_actual)
+                            raw_sacct=raw_sacct, csv_input=csv_input)
+        if errors > 0:
+            LOG.warning("Encountered %d errors while processing %s to %s", errors, start, end_actual)   
+            return errors                         
+        else:
+            LOG.info("Successfully processed %s to %s", start, end_actual)
+            update_last_timestamp(session, update_time=end_actual)
         start = end
         days_ago -= day_interval
     return errors
@@ -1200,6 +1205,7 @@ def slurm2sql(session : Session, sacct_filter=['-a'], update=False, jobs_only=Fa
         rows = rows()  # activate the generator
     else:
         rows = sacct_iter(slurm_cols, sacct_filter, raw_sacct=raw_sacct, errors=errors)
+
     postgres = session.get_bind().dialect.name == 'postgresql'
     pending_rows: list[dict[str, Any]] = []
 
